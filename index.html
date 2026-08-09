@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shatool — SHA-256 interior</title>
+<link rel="stylesheet" href="css/shatool.css">
+</head>
+<body>
+
+<header id="topbar">
+  <h1>shatool</h1>
+  <p class="tagline">the interior of SHA-256, one bit at a time</p>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-readout">
+    <span class="k">message</span>
+    <span class="v" id="stat-nbits">— bits</span>
+    <span class="k">padded to</span>
+    <span class="v" id="stat-blocks">— blocks</span>
+    <span class="k">rounds</span>
+    <span class="v" id="stat-rounds">64</span>
+  </div>
+</header>
+
+<main id="layout">
+
+  <!-- ============================ INPUT ============================ -->
+  <section id="panel-input" class="panel">
+    <h2>Input</h2>
+
+    <div class="control-row">
+      <label for="input-nbits">Length</label>
+      <input type="number" id="input-nbits" min="0" max="4096" step="1" value="513">
+      <span class="unit">bits</span>
+    </div>
+
+    <div class="control-row">
+      <button type="button" id="btn-randomize">Randomize</button>
+      <button type="button" id="btn-clear">Zero</button>
+    </div>
+
+    <div class="control-row">
+      <label for="input-hex" class="stacked">Hex</label>
+      <textarea id="input-hex" rows="3" spellcheck="false"
+                autocapitalize="off" autocomplete="off"></textarea>
+    </div>
+
+    <p id="msg-error" class="error" hidden></p>
+
+    <div class="control-row">
+      <label class="checkline">
+        <input type="checkbox" id="chk-showbits" checked>
+        <span>Show individual bits</span>
+      </label>
+    </div>
+
+    <div id="hex-grid" class="hex-grid"></div>
+
+    <div id="padding-summary" class="summary"></div>
+  </section>
+
+  <!-- ========================= COMPUTATION ========================= -->
+  <section id="panel-canvas" class="panel">
+    <div class="canvas-head">
+      <h2>Computation</h2>
+      <div id="block-tabs" class="tabs"></div>
+      <div class="canvas-controls">
+        <label class="checkline" title="Reduce the round count to watch the state before diffusion completes">
+          <span>rounds</span>
+          <input type="number" id="input-rounds" min="0" max="64" step="1" value="64">
+        </label>
+        <label class="checkline">
+          <input type="checkbox" id="chk-diff">
+          <span>Diff vs reference</span>
+        </label>
+        <button type="button" id="btn-set-reference"
+                title="Pin the current message as the baseline for diff mode">Pin reference</button>
+      </div>
+    </div>
+
+    <div id="canvas-wrap" class="canvas-wrap">
+      <canvas id="canvas-main"></canvas>
+      <div id="canvas-tooltip" class="tooltip" hidden></div>
+    </div>
+
+    <div id="canvas-legend" class="legend"></div>
+    <div id="round-detail" class="round-detail"></div>
+  </section>
+
+  <!-- ============================ OUTPUT =========================== -->
+  <section id="panel-output" class="panel">
+    <h2>Output</h2>
+
+    <div class="field">
+      <div class="field-label">SHA-256 digest <span class="muted">(emitted order, byte 0 first)</span></div>
+      <div id="digest-hex" class="digest-hex"></div>
+    </div>
+
+    <div class="control-row">
+      <label class="checkline">
+        <input type="checkbox" id="chk-digest-bits">
+        <span>Show individual bits</span>
+      </label>
+    </div>
+
+    <div id="digest-bytes" class="digest-bytes"></div>
+
+    <h3>As Bitcoin reads it</h3>
+
+    <div class="control-row">
+      <label for="pow-nbits">Difficulty</label>
+      <select id="pow-nbits">
+        <option value="0x17034a3f">Mainnet (example)</option>
+        <option value="0x1d00ffff">Genesis block</option>
+        <option value="0x1f00ffff">Very easy</option>
+        <option value="custom">Custom…</option>
+      </select>
+    </div>
+
+    <div class="control-row" id="pow-nbits-custom-row" hidden>
+      <label for="pow-nbits-custom">nBits</label>
+      <input type="text" id="pow-nbits-custom" value="0x17034a3f" spellcheck="false">
+    </div>
+
+    <div id="pow-verdict" class="verdict"></div>
+    <div id="pow-stats" class="summary"></div>
+
+    <div class="field">
+      <div class="field-label">Target</div>
+      <div id="pow-target" class="digest-hex target"></div>
+    </div>
+
+    <div id="pow-note" class="note"></div>
+  </section>
+
+</main>
+
+<script src="js/vendor/shavar.js"></script>
+<script src="js/model.js"></script>
+<script src="js/pow.js"></script>
+<script src="js/ui-input.js"></script>
+<script src="js/ui-canvas.js"></script>
+<script src="js/ui-output.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
