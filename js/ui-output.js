@@ -59,6 +59,25 @@
     var noteSpans = null;       // 32, digest in Bitcoin display order
     var builtBytesWithBits = null;
 
+    /* Blowup on newly cleared high-order bits.
+     *
+     * When the leading-zero run grows, the bits between the old end and the
+     * new one have just gone to zero — and they are the most significant bits
+     * the search has ever cleared, which is the only real progress a run
+     * makes. They get a brief pop so the moment is visible; without it an
+     * improvement is a couple of cells quietly changing shade among 256.
+     *
+     * The class has to persist for the animation's duration or the next
+     * frame's repaint cuts it off mid-pop, so a deadline is kept rather than
+     * a flag. Two interchangeable class names alternate because re-applying
+     * the same one does not restart a CSS animation, and two improvements in
+     * quick succession must both be seen. */
+    var prevAchieved = -1;
+    var blow = null;            // {from, to, until, cls}
+    var blowFlip = false;
+    var BLOW_MS = 460;
+    var nowMs = function () { return new Date().getTime(); };
+
     elShowBits.addEventListener("change", function () {
       cb.onShowDigestBits(elShowBits.checked);
     });
@@ -229,6 +248,18 @@
       var required = state.search.threshold;
       var achieved = a.leadingZeroBits;
 
+      if (prevAchieved >= 0 && achieved > prevAchieved) {
+        blowFlip = !blowFlip;
+        blow = {
+          from: prevAchieved,
+          to: achieved,
+          until: nowMs() + BLOW_MS,
+          cls: blowFlip ? "blow-a" : "blow-b",
+        };
+      }
+      prevAchieved = achieved;
+      if (blow && nowMs() > blow.until) blow = null;
+
       /* The best any point in the current search session reached — sampling
        * runs and flip scans both feed it. -1 until something has been tried;
        * the Reset button clears it. Marked on the raster as well as counted
@@ -279,6 +310,7 @@
          * within the required run it separates the zeros already in hand
          * from the ones still needed. */
         if (k < achieved) cls += " lz-run";
+        if (blow && k >= blow.from && k < blow.to) cls += " " + blow.cls;
         if (k === required) cls += " boundary";
         if (k === sessionBest) cls += " sess-best";
         var cell = rasterCells[k];

@@ -651,6 +651,30 @@ button:active { background: #1a212a; }
  * the green stops is the count. */
 .br-bit.lz-run { background: rgba(95, 194, 126, 0.30); }
 
+/* A bit that has just become one of the leading zeros. Two identical
+ * animations under different names, alternated by the renderer, because
+ * re-applying the same animation name does not restart it and two
+ * improvements in quick succession must both be seen.
+ *
+ * Grid items honour z-index without being positioned, so the expanding cell
+ * rises above its neighbours rather than being clipped by them. */
+@keyframes lz-blow {
+  0%   { transform: scale(1);   box-shadow: 0 0 0 0 rgba(95, 194, 126, 0.9); }
+  30%  { transform: scale(2.4); box-shadow: 0 0 12px 4px rgba(95, 194, 126, 0.8); }
+  100% { transform: scale(1);   box-shadow: 0 0 0 0 rgba(95, 194, 126, 0); }
+}
+@keyframes lz-blow-alt {
+  0%   { transform: scale(1);   box-shadow: 0 0 0 0 rgba(95, 194, 126, 0.9); }
+  30%  { transform: scale(2.4); box-shadow: 0 0 12px 4px rgba(95, 194, 126, 0.8); }
+  100% { transform: scale(1);   box-shadow: 0 0 0 0 rgba(95, 194, 126, 0); }
+}
+.br-bit.blow-a { animation: lz-blow 460ms ease-out; z-index: 3; }
+.br-bit.blow-b { animation: lz-blow-alt 460ms ease-out; z-index: 3; }
+
+@media (prefers-reduced-motion: reduce) {
+  .br-bit.blow-a, .br-bit.blow-b { animation: none; }
+}
+
 /* The count itself, on the picture. Bottom right, over the least significant
  * bits, which are the ones nothing else is trying to say anything about. */
 .lz-badge {

@@ -67,12 +67,7 @@
       /** The best sample's message bytes, so a pause can rewind to it. */
       bestBytes: null,
       bestNbits: -1,
-      /** Set when a pause rewound the message, so the UI can say so. */
-      rewound: false,
-      /** Best leading-zero count in the most recent redraw's batch, and how
-       *  many samples that batch drew. */
-      lastBatchBest: -1,
-      lastBatchSize: 0,
+
       found: false,
       startedAt: 0,
       rate2: 0,           // measured samples per second
@@ -305,25 +300,26 @@
     });
 
     s.attempts += res.attempts;
-    s.lastBatchBest = res.bestBits;
-    s.lastBatchSize = res.attempts;
-
-    /* Show the best point of this batch rather than whichever sample the
-     * batch happened to end on. At five hundred samples between redraws the
-     * last one is an arbitrary draw and the frame says nothing; the best of
-     * the batch is a real point that was really sampled and is the closest
-     * this redraw came. It also makes the picture legible — best-of-500 lands
-     * around nine leading zeros, so the raster shows a run rather than
-     * flickering noise.
-     *
-     * This is not the session best, which is tracked separately and is what a
-     * pause restores. A later batch may well be worse than an earlier one. */
-    if (res.bestBytes) state.msg.bytes.set(res.bestBytes);
-
     if (res.bestBits > s.best) {
       s.best = res.bestBits;
       s.bestBytes = res.bestBytes;
       s.bestNbits = state.msg.nbits;
+    }
+
+    /* Show the best point of the whole run, not of this batch.
+     *
+     * The batch has already been folded into the session best above, so this
+     * display only ever improves: the leading-zero run on the raster grows
+     * and never shrinks, which is what a search actually achieves. Showing
+     * each batch's own best instead made it bounce, which reads as progress
+     * being lost when nothing had been lost at all.
+     *
+     * The point shown is still one that was really sampled — it is simply the
+     * best of them — so no frame is a summary of samples that never existed.
+     * It also makes pausing a no-op rather than a jump. */
+    if (s.bestBytes && s.bestNbits === state.msg.nbits &&
+        s.bestBytes.length === state.msg.bytes.length) {
+      state.msg.bytes.set(s.bestBytes);
     }
 
     var elapsed = (now() - s.startedAt) / 1000;
@@ -355,7 +351,6 @@
     if (state.msg.nbits === 0) return;
     s.running = true;
     s.found = false;
-    s.rewound = false;
     noteCurrentPoint();
     /* Restart the clock but keep the counters: a pause and resume is one run
      * as far as the attempt total is concerned, and resetting is a separate
@@ -444,11 +439,8 @@
       s.best = -1;
       s.bestBytes = null;
       s.bestNbits = -1;
-      s.rewound = false;
       s.found = false;
       s.rate2 = 0;
-      s.lastBatchBest = -1;
-      s.lastBatchSize = 0;
       state.flip = null;
       cancelFlipScan();
       render();

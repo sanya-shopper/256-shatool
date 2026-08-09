@@ -882,9 +882,10 @@ check("the message is left with exactly the winning bit flipped", () => {
     const b = i >> 3, mask = 1 << (7 - (i & 7));
     if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
   }
-  eq(differing, r.indices, "exactly one bit should differ, the winner");
-  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.after),
-    "and the message must hash to the digest that was reported");
+  eq(differing, r.applied ? r.indices : [],
+    "the winner is flipped only if it was an improvement");
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.resulting),
+    "and the message must hash to what the scan says it now has");
 });
 
 check("the reported drop is the exact difference between the two digests", () => {
@@ -911,7 +912,9 @@ check("bestSingleFlip works on a sub-byte message", () => {
   eq(r.tested, 513);
   ok(r.indices[0] >= 0 && r.indices[0] < 513);
   S.checkTrailingBits(msg.bytes, msg.nbits);
-  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.after));
+  /* `resulting`, not `after`: a scan declines a candidate worse than the
+     starting point, and about one message in 514 has no improving flip. */
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.resulting));
 });
 
 check("bestSingleFlip returns null for an empty message", () => {
@@ -1001,8 +1004,8 @@ check("the scan finds the pair giving the smallest digest", () => {
   const res = scan.apply();
   eq(res.indices, bestPair);
   eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
-  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(bestDigest),
-    "and the message must be left on the winning pair");
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(res.resulting),
+    "and the message must be left on whatever the scan kept");
 });
 
 check("apply() flips exactly the two winning bits", () => {
@@ -1017,7 +1020,8 @@ check("apply() flips exactly the two winning bits", () => {
     const b = i >> 3, mask = 1 << (7 - (i & 7));
     if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
   }
-  eq(differing, res.indices, "exactly two bits, the winning pair");
+  eq(differing, res.applied ? res.indices : [],
+    "the winning pair is flipped only if it was an improvement");
 });
 
 check("the step budget does not affect the answer", () => {
@@ -1162,7 +1166,7 @@ check("a width-3 scan finds the same winner as an exhaustive search", () => {
   eq(res.indices, best);
   eq(res.n, 3);
   eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
-  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(bestDigest));
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(res.resulting));
 });
 
 check("apply flips exactly n bits, and the right ones", () => {
@@ -1178,8 +1182,8 @@ check("apply flips exactly n bits, and the right ones", () => {
     const b = i >> 3, mask = 1 << (7 - (i & 7));
     if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
   }
-  eq(differing, res.indices);
-  eq(differing.length, 3);
+  eq(differing, res.applied ? res.indices : []);
+  if (res.applied) eq(differing.length, 3);
 });
 
 check("the message is intact between steps at any width", () => {
@@ -1222,13 +1226,14 @@ check("a ranged scan never touches a bit outside the range", () => {
   for (const i of res.indices) {
     ok(i >= 40 && i < 64, "index " + i + " must lie inside the range");
   }
-  /* And the bits that did move are exactly the winning pair. */
+  /* And the bits that did move are exactly the winning pair, if it was
+     kept at all. */
   const differing = [];
   for (let i = 0; i < 120; i++) {
     const b = i >> 3, mask = 1 << (7 - (i & 7));
     if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
   }
-  eq(differing, res.indices);
+  eq(differing, res.applied ? res.indices : []);
 });
 
 check("a ranged scan finds the best within the range, not overall", () => {
@@ -1255,19 +1260,38 @@ check("a ranged scan finds the best within the range, not overall", () => {
   eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
 });
 
+/**
+ * A random message together with one bit whose flip moves its digest in the
+ * given direction, or null after `tries` attempts.
+ *
+ * The retry is not defensive padding. Whether an improving flip exists at all
+ * depends on where the starting digest happens to sit: the chance a given
+ * flip lands below it is its own value as a fraction of the range, so a base
+ * already in the lowest 1/256 of the space is quite likely to have no
+ * improving flip among 256 candidates. That is the diminishing return this
+ * whole tool is about, and it shows up here as a test that fails on roughly
+ * one run in a few hundred unless it is allowed to draw again.
+ */
+function messageWithFlip(nbits, direction, tries) {
+  for (let t = 0; t < (tries || 60); t++) {
+    const msg = M.randomize(M.createMessage(nbits));
+    const base = S.hashEx(msg.bytes, msg.nbits);
+    for (let i = 0; i < nbits; i++) {
+      M.toggleBit(msg, i);
+      const cmp = P.compareValues(S.hashEx(msg.bytes, msg.nbits), base);
+      M.toggleBit(msg, i);
+      if (Math.sign(cmp) === direction) return { msg: msg, base: base, bit: i };
+    }
+  }
+  return null;
+}
+
 check("apply() declines when the best candidate is worse than the start", () => {
   /* A width-n scan never tries the do-nothing change, so its best can be a
      step backwards. Aimed at a single bit known to raise the digest. */
-  const msg = M.randomize(M.createMessage(256));
-  const base = S.hashEx(msg.bytes, msg.nbits);
-
-  let worse = -1;
-  for (let i = 0; i < 256 && worse < 0; i++) {
-    M.toggleBit(msg, i);
-    if (P.compareValues(S.hashEx(msg.bytes, msg.nbits), base) > 0) worse = i;
-    M.toggleBit(msg, i);
-  }
-  ok(worse >= 0, "some bit must raise the digest");
+  const found = messageWithFlip(256, 1);
+  ok(found, "should have found a message with a raising flip");
+  const msg = found.msg, base = found.base, worse = found.bit;
 
   const before = Array.from(msg.bytes);
   const scan = Q.createFlipScan(msg, 1, { start: worse, width: 1 });
@@ -1285,16 +1309,9 @@ check("apply() declines when the best candidate is worse than the start", () => 
 });
 
 check("apply() takes an improvement, and says it did", () => {
-  const msg = M.randomize(M.createMessage(256));
-  const base = S.hashEx(msg.bytes, msg.nbits);
-
-  let better = -1;
-  for (let i = 0; i < 256 && better < 0; i++) {
-    M.toggleBit(msg, i);
-    if (P.compareValues(S.hashEx(msg.bytes, msg.nbits), base) < 0) better = i;
-    M.toggleBit(msg, i);
-  }
-  ok(better >= 0, "some bit must lower the digest");
+  const found = messageWithFlip(256, -1);
+  ok(found, "should have found a message with a lowering flip");
+  const msg = found.msg, better = found.bit;
 
   const scan = Q.createFlipScan(msg, 1, { start: better, width: 1 });
   scan.step(1);
@@ -1611,6 +1628,14 @@ const setNbits = (n) => {
   el("input-nbits").value = String(n);
   dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
 };
+/** Randomize until the digest has at least `min` leading zeros. */
+const ensureLeadingZeros = (min) => {
+  for (let i = 0; i < 500; i++) {
+    if (P.leadingZeroBits(hx(shownDigest())) >= min) return true;
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+  }
+  return false;
+};
 /** Set the sampling goal through the real threshold field. */
 const setThreshold = (n) => {
   el("search-threshold").value = String(n);
@@ -1627,6 +1652,13 @@ const setRange = (a, b) => {
   el("search-end").value = String(b);
   dom.fire(el("search-end"), "change", { target: el("search-end") });
 };
+/** The best leading-zero count the current run reports. */
+const sessionBest = () => {
+  const m = el("search-stats").innerHTML
+    .match(/best so far<\/span><span class="n">(\d+) zero bits/);
+  return m ? Number(m[1]) : -1;
+};
+
 /** The sampler's attempt total, read back off the panel. */
 const sampleCount = () => {
   const m = el("search-stats").innerHTML
@@ -1964,9 +1996,85 @@ check("the marked run tracks the digest as it changes", () => {
     "the goal was 6 and the run met it, so the badge passes");
 });
 
+check("newly cleared high-order bits blow up, and only those", () => {
+  setNbits(256);
+  const blown = () => rasterCells()
+    .map((c, k) => ({ c: c, k: k }))
+    .filter((x) => /blow-[ab]/.test(x.c.className))
+    .map((x) => x.k);
+
+  let prev = P.leadingZeroBits(hx(shownDigest()));
+  let saw = false;
+  for (let i = 0; i < 400 && !saw; i++) {
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+    const now = P.leadingZeroBits(hx(shownDigest()));
+    if (now > prev) {
+      /* Exactly the bits between the old end of the run and the new one —
+         the high-order bits this redraw cleared, and nothing else. */
+      const expected = [];
+      for (let k = prev; k < now; k++) expected.push(k);
+      eq(blown(), expected, "cleared " + prev + " -> " + now);
+      saw = true;
+    }
+    prev = now;
+  }
+  ok(saw, "a few hundred randomizations should improve the run at least once");
+});
+
+check("a step backwards starts no new blowup", () => {
+  /* Not "nothing is animating": a pop legitimately started a moment earlier
+     runs for its full 460ms regardless of what the digest does next, and a
+     test loop gets through hundreds of iterations well inside that window.
+     What must hold is that a decrease does not START one — so the marked set
+     either stays exactly as it was or has expired to nothing. */
+  setNbits(256);
+  const blownSet = () => rasterCells()
+    .map((c, k) => (/blow-[ab]/.test(c.className) ? k : -1))
+    .filter((k) => k >= 0).join(",");
+
+  let prev = P.leadingZeroBits(hx(shownDigest()));
+  let saw = false;
+  for (let i = 0; i < 400 && !saw; i++) {
+    const before = blownSet();
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+    const now = P.leadingZeroBits(hx(shownDigest()));
+    if (now < prev) {
+      const after = blownSet();
+      ok(after === before || after === "",
+        "a decrease must not start a pop: was [" + before + "] now [" +
+        after + "]");
+      saw = true;
+    }
+    prev = now;
+  }
+  ok(saw, "the loop should have seen the run get worse at least once");
+});
+
+check("consecutive improvements alternate the class so each replays", () => {
+  /* Re-applying the same CSS animation name does not restart it, so two
+     improvements in a row must not share a name or the second is silent. */
+  setNbits(256);
+  const nameOf = () => {
+    const c = rasterCells().find((x) => /blow-[ab]/.test(x.className));
+    return c ? c.className.match(/blow-[ab]/)[0] : null;
+  };
+
+  const seen = [];
+  let prev = P.leadingZeroBits(hx(shownDigest()));
+  for (let i = 0; i < 800 && seen.length < 2; i++) {
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+    const now = P.leadingZeroBits(hx(shownDigest()));
+    if (now > prev) seen.push(nameOf());
+    prev = now;
+  }
+  eq(seen.length, 2, "needed two improvements to compare");
+  ok(seen[0] !== seen[1],
+    "consecutive pops must use different names, got " + seen.join(" then "));
+});
+
 check("the badge passes exactly when the run reaches the goal", () => {
+  ok(ensureLeadingZeros(1), "need a digest with at least one leading zero");
   const achieved = P.leadingZeroBits(hx(shownDigest()));
-  ok(achieved >= 6);
   setThreshold(achieved);
   ok(el("lz-badge").className.indexOf("pass") >= 0,
     "met: " + el("lz-badge").className);
@@ -2055,8 +2163,9 @@ check("the decisive violation is the most significant one, ringed once", () => {
 });
 
 check("a goal already met leaves no violations at all", () => {
+  ok(ensureLeadingZeros(1), "need a digest with at least one leading zero");
   const achieved = P.leadingZeroBits(hx(shownDigest()));
-  setThreshold(Math.max(1, achieved));
+  setThreshold(achieved);
   eq(cellsIn("digest-bit-raster", "violate").length, 0,
     "nothing inside the region can be a 1 when the run covers it");
   eq(cellsIn("digest-bit-raster", "violate-first").length, 0);
@@ -2298,66 +2407,59 @@ check("starting a run schedules frames and shows it is running", () => {
 check("each frame samples, advances the counter, and redraws", () => {
   const digestBefore = shownDigest();
   /* Sampling frames share the animation queue with the canvas afterglow's
-   * decay frames, so pumping N frames does not mean N rounds of sampling.
-   * The assertion is on the counter, not on the frame count. */
-  dom.pumpFrames(12);
+   * decay frames, so pumping N frames does not mean N rounds of sampling —
+   * and how many decay frames appear depends on what changed. Pump until the
+   * counter says enough batches have run, rather than guessing a frame
+   * count that happens to work most of the time. */
+  for (let i = 0; i < 60 && sampleCount() < 15; i++) dom.pumpFrames(1);
   const n = sampleCount();
-  ok(n >= 15, "expected several frames of 5 samples, got " + n);
+  ok(n >= 15, "expected several batches of 5 samples, got " + n);
   eq(n % 5, 0, "every frame draws a whole batch: " + n);
-  ok(shownDigest() !== digestBefore, "the display must follow the sampling");
+  /* Not asserted to have changed: the display holds the run's best, and a
+     stretch of batches that beats nothing leaves it exactly where it was.
+     What must hold is that it is the best, and that it is consistent. */
+  eq(P.leadingZeroBits(hx(shownDigest())), sessionBest(),
+    "the display must be the run's best");
   eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513),
     "and must still be the digest of the message on screen");
 });
 
-check("each redraw shows that batch's best sample, not its last", () => {
-  /* The digest on screen must be the best of the batch just drawn, which is
-   * checkable without controlling the random source: its leading-zero count
-   * has to equal the batch figure the panel reports. */
-  const batchBest = () => {
-    const m = el("search-stats").innerHTML
-      .match(/best in last redraw<\/span><span class="n">(\d+) of/);
-    return m ? Number(m[1]) : -1;
-  };
-
-  for (let i = 0; i < 6; i++) {
+check("the digest on screen is always the run's best so far", () => {
+  /* Checkable without controlling the random source: the shown digest's
+   * leading-zero count must equal the figure the panel reports, on every
+   * frame. Only a display driven by the same record can satisfy that. */
+  for (let i = 0; i < 8; i++) {
     dom.pumpFrames(1);
-    if (batchBest() < 0) continue;          // a glow frame, not a sampling one
-    eq(P.leadingZeroBits(hx(shownDigest())), batchBest(),
-      "the shown digest must be the batch's best");
+    if (sessionBest() < 0) continue;
+    eq(P.leadingZeroBits(hx(shownDigest())), sessionBest(),
+      "the shown digest must be the run's best");
     eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513),
       "and must still be the digest of the message on screen");
   }
-  ok(batchBest() >= 0, "the batch figure must be reported at all");
+  ok(sessionBest() >= 0, "a run must report a best at all");
 });
 
-check("the batch best is reported with the batch size", () => {
-  const stats = el("search-stats").innerHTML;
-  ok(/best in last redraw<\/span><span class="n">\d+ of \d+ samples/.test(stats),
-    stats);
-  /* Batch size is the per-redraw rate, which this run set to 5. */
-  ok(/best in last redraw<\/span><span class="n">\d+ of 5 samples/.test(stats),
-    stats);
-});
-
-check("a batch best can be worse than the session best", () => {
-  /* They are different quantities and the panel must not conflate them: the
-   * session best only ever climbs, a batch best is redrawn from scratch. */
-  const sessionBest = Number(el("search-stats").innerHTML
-    .match(/best so far<\/span><span class="n">(\d+) zero bits/)[1]);
-  const batch = Number(el("search-stats").innerHTML
-    .match(/best in last redraw<\/span><span class="n">(\d+) of/)[1]);
-  ok(sessionBest >= batch,
-    "the session best must be at least any single batch's: " +
-    sessionBest + " vs " + batch);
+check("the display never goes backwards while a run continues", () => {
+  /* The property that distinguishes showing the run's best from showing each
+   * batch's own: a batch best bounces, a run best only climbs. */
+  let prev = P.leadingZeroBits(hx(shownDigest()));
+  for (let i = 0; i < 20; i++) {
+    dom.pumpFrames(1);
+    const now = P.leadingZeroBits(hx(shownDigest()));
+    ok(now >= prev, "leading zeros fell from " + prev + " to " + now);
+    prev = now;
+  }
 });
 
 check("sampling moves only the window's bits", () => {
   const hexBefore = el("input-hex").value;
   dom.pumpFrames(6);
   const hexAfter = el("input-hex").value;
-  ok(hexBefore !== hexAfter, "something must have moved");
-  /* The window is bits 449..512, which lives in bytes 56..64, so bytes 0..55
-   * — the first 112 hex digits — must be untouched. */
+  /* Not asserted to have changed: the display holds the run's best, so a
+   * stretch of frames that beats nothing leaves it exactly where it was.
+   * What must hold either way is that nothing outside the window moved — the
+   * window is bits 449..512, in bytes 56..64, so the first 112 hex digits
+   * are untouchable. */
   eq(hexBefore.slice(0, 112), hexAfter.slice(0, 112),
     "bytes 0..55 are wholly outside the window");
 });
@@ -2490,9 +2592,12 @@ check("a flip that improves is applied, and the move is reported", () => {
      of all flips lower it. Starting from an already-searched point would be
      flaky: after a good scan the value is small enough that most single
      flips raise it. */
-  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
-  const better = findBitWhereFlip(el("input-hex").value, 513, -1);
-  ok(better >= 0, "some bit must lower the digest");
+  let better = -1;
+  for (let i = 0; i < 60 && better < 0; i++) {
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+    better = findBitWhereFlip(el("input-hex").value, 513, -1);
+  }
+  ok(better >= 0, "should have found a message with a lowering flip");
   setRange(better, better);
 
   const beforeHex = el("input-hex").value;
@@ -2510,9 +2615,12 @@ check("a scan that cannot improve leaves the input alone and says so", () => {
   /* Aimed at a single bit that is known to raise the digest, so the only
      candidate the scan has is a step backwards. */
   setNbits(513);
-  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
-  const worse = findBitWhereFlip(el("input-hex").value, 513, 1);
-  ok(worse >= 0, "some bit must raise the digest");
+  let worse = -1;
+  for (let i = 0; i < 60 && worse < 0; i++) {
+    dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+    worse = findBitWhereFlip(el("input-hex").value, 513, 1);
+  }
+  ok(worse >= 0, "should have found a message with a raising flip");
   setRange(worse, worse);
 
   const beforeHex = el("input-hex").value;
@@ -2703,7 +2811,7 @@ check("no bit carries a neutral verdict when the marking is off", () => {
   eq(el("neutral-summary").innerHTML, "");
 });
 
-check("pausing the sampler rewinds to the best sample it found", () => {
+check("pausing leaves the display on the run's best", () => {
   setNbits(513);
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
   el("search-threshold").value = "200";      // unreachable: it will not stop
@@ -2714,20 +2822,19 @@ check("pausing the sampler rewinds to the best sample it found", () => {
   dom.fire(el("btn-search"), "click", { target: el("btn-search") });
   dom.pumpFrames(30);
 
-  /* Mid-run the message is wherever the last sample landed, which is almost
-   * certainly not the best one. */
-  const bestBits = Number(el("search-stats").innerHTML
-    .match(/best so far<\/span><span class="n">(\d+) zero bits/)[1]);
+  const bestBits = sessionBest();
   ok(bestBits >= 1, "a few thousand samples should beat zero");
+  const hexMidRun = el("input-hex").value;
 
   dom.fire(el("btn-search"), "click", { target: el("btn-search") });   // pause
 
+  /* Pausing is a no-op for the message: every frame of the run was already
+   * showing the run's best point, so there is nothing to put back. */
+  eq(el("input-hex").value, hexMidRun, "pausing must not move anything");
   eq(P.leadingZeroBits(hx(shownDigest())), bestBits,
-    "the message left on screen must be the best sample, not the last one");
+    "and the message left on screen is the run's best");
   eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513),
-    "and must still be internally consistent");
-  ok(/rewound to the best sample/.test(el("search-stats").innerHTML),
-    "and it must say so: " + el("search-stats").innerHTML);
+    "and is still internally consistent");
 });
 
 check("pausing with nothing sampled leaves the message alone", () => {

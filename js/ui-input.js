@@ -376,15 +376,9 @@
         ["expected at random for " + s.threshold, fmtCount(expected)],
         ["best so far", s.best < 0 ? "—" : s.best + " zero bits"],
       ];
-      if (s.lastBatchBest >= 0) {
-        rows.push(["best in last redraw",
-          s.lastBatchBest + " of " + fmtCount(s.lastBatchSize) + " samples"]);
-      }
       if (s.rate2 > 0) rows.push(["rate", fmtCount(s.rate2) + " / s"]);
       if (s.found) {
         rows.push(["result", "stopped: " + s.threshold + " zero bits reached"]);
-      } else if (s.rewound) {
-        rows.push(["result", "paused — rewound to the best sample"]);
       }
 
       var html = "";
