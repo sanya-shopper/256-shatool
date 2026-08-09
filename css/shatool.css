@@ -625,6 +625,25 @@ button:active { background: #1a212a; }
 .br-bit.req    { background: #04060a; }
 .br-bit.req.on { background: var(--pow-zero); }
 
+/* The outline of the region the target requires to be zero. Drawn edge by
+ * edge because the region is a prefix of a row-major grid and so its
+ * boundary is a staircase, not a rectangle. Green, matching the fill below:
+ * the outline is the container and the fill is the progress, which is the
+ * one metaphor this pair of marks is meant to carry. */
+.br-bit.rq-top    { border-top: 1px solid rgba(95, 194, 126, 0.75); }
+.br-bit.rq-bottom { border-bottom: 1px solid rgba(95, 194, 126, 0.75); }
+.br-bit.rq-left   { border-left: 1px solid rgba(95, 194, 126, 0.75); }
+.br-bit.rq-right  { border-right: 1px solid rgba(95, 194, 126, 0.75); }
+
+/* A 1 inside that region: the requirement broken. The most significant one
+ * is ringed, because it alone settles the comparison — everything below it
+ * is already irrelevant once it is set. */
+.br-bit.violate { background: var(--pow-zero); }
+.br-bit.violate-first {
+  background: #ff7a7a;
+  box-shadow: 0 0 0 1px #ffffff, 0 0 5px rgba(224, 92, 92, 0.9);
+}
+
 /* The leading zeros this digest actually has. Filled, where the target
  * boundary and the session best are edges — one channel each, so the three
  * never read as the same thing. Inside the required run this is the visible
@@ -675,6 +694,28 @@ button:active { background: #1a212a; }
   justify-content: space-between;
   gap: 8px;
 }
+.raster-caption .rc-key {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px 12px;
+  color: var(--fg-faint);
+  margin-top: 2px;
+}
+.raster-caption .rc-key span {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.raster-caption .key-outline {
+  border: 1px solid rgba(95, 194, 126, 0.75);
+  background: transparent;
+}
+.raster-caption .key-fill { background: rgba(95, 194, 126, 0.55); }
+.raster-caption .key-bad { background: var(--pow-zero); }
+
 .raster-caption .n { color: var(--fg); }
 .raster-caption .n.pass { color: var(--ok); }
 .raster-caption .n.fail { color: var(--bad); }

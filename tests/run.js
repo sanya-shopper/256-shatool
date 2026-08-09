@@ -1951,6 +1951,98 @@ check("the badge marks a pass when the run reaches the requirement", () => {
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
 });
 
+check("the required-zero region is outlined as a staircase prefix", () => {
+  setNBits("0x17034a3f");
+  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  eq(required, 78);
+  const cells = rasterCells();
+
+  /* Each cell must claim exactly the edges that lie on the region's own
+     boundary — top row, left column, right column or last-in-run, and the
+     row below being outside. Recomputed here independently of the renderer. */
+  for (let k = 0; k < 256; k++) {
+    const col = k % 32;
+    const inReq = k < required;
+    const c = cells[k];
+    eq(c.classList.contains("rq-top"), inReq && k < 32, "top at " + k);
+    eq(c.classList.contains("rq-left"), inReq && col === 0, "left at " + k);
+    eq(c.classList.contains("rq-right"),
+      inReq && (col === 31 || k + 1 >= required), "right at " + k);
+    eq(c.classList.contains("rq-bottom"),
+      inReq && k + 32 >= required, "bottom at " + k);
+  }
+});
+
+check("the outline closes: every region cell has an edge where it must", () => {
+  /* A shape whose boundary is drawn per-cell is only closed if no interior
+     cell claims an edge and no border cell omits one. Checked by walking the
+     region's four neighbours. */
+  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const cells = rasterCells();
+  const inside = (k) => k >= 0 && k < required;
+  for (let k = 0; k < required; k++) {
+    const col = k % 32;
+    const c = cells[k];
+    /* Up is outside iff we are in row 0. */
+    eq(c.classList.contains("rq-top"), !inside(k - 32) && k < 32);
+    /* Down is outside iff the cell below is past the requirement. */
+    eq(c.classList.contains("rq-bottom"), !inside(k + 32));
+    /* Left is outside iff we are at the grid's left edge. */
+    eq(c.classList.contains("rq-left"), col === 0);
+    /* Right is outside iff the grid ends or the requirement does. */
+    eq(c.classList.contains("rq-right"), col === 31 || !inside(k + 1));
+  }
+});
+
+check("bits that break the requirement are marked, and only those", () => {
+  const digest = hx(shownDigest());
+  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const cells = rasterCells();
+
+  let expected = 0;
+  for (let k = 0; k < 256; k++) {
+    const bit = (digest[31 - (k >> 3)] >> (7 - (k & 7))) & 1;
+    const violates = k < required && bit === 1;
+    eq(cells[k].classList.contains("violate"), violates, "bit " + k);
+    if (violates) expected++;
+  }
+  eq(cellsIn("digest-bit-raster", "violate").length, expected);
+  ok(expected > 0, "an unsearched digest should break a mainnet requirement");
+});
+
+check("the decisive violation is the most significant one, ringed once", () => {
+  const achieved = P.leadingZeroBits(hx(shownDigest()));
+  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const first = cellsIn("digest-bit-raster", "violate-first");
+
+  if (achieved >= required) {
+    eq(first.length, 0, "nothing to decide when the requirement is met");
+    return;
+  }
+  eq(first.length, 1, "exactly one decisive bit");
+  eq(Number(first[0].title.match(/^PoW bit (\d+)/)[1]), achieved,
+    "it is the first 1 after the leading zeros");
+  ok(first[0].classList.contains("violate"), "and is itself a violation");
+  ok(/decisive/.test(first[0].title), first[0].title);
+});
+
+check("meeting the requirement leaves no violations at all", () => {
+  /* A target demanding no leading zeros cannot be violated by anything. */
+  setNBits("0x2100ffff");
+  eq(P.leadingZeroBits(P.targetBytes(0x2100ffff)), 0);
+  eq(cellsIn("digest-bit-raster", "violate").length, 0);
+  eq(cellsIn("digest-bit-raster", "rq-top").length, 0,
+    "and nothing to outline either");
+  setNBits("0x17034a3f");
+});
+
+check("the raster caption explains all three marks", () => {
+  const caption = el("digest-bit-caption").innerHTML;
+  ok(/zeros required/.test(caption), caption);
+  ok(/zeros achieved/.test(caption), caption);
+  ok(/1 where a 0 is required/.test(caption), caption);
+});
+
 check("exactly one boundary marker, at the end of the required run", () => {
   setNBits("0x1d00ffff");
   const marked = cellsIn("digest-bit-raster", "boundary");

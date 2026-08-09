@@ -239,9 +239,37 @@
       for (var k = 0; k < 256; k++) {
         var loc = powBitLocation(k);
         var bit = (d[loc.byteIndex] >> loc.bitInByte) & 1;
+        var inReq = k < required;
         var cls = "br-bit " + a.roles[loc.byteIndex].role;
         if (bit) cls += " on";
-        if (k < required) cls += " req";
+        if (inReq) cls += " req";
+
+        /* The required-zero region, outlined. It is a prefix of a 32-column
+         * row-major grid, so its outline is a staircase: full rows while the
+         * requirement lasts, then a partial one. Each cell is told which of
+         * its own edges lie on that boundary, which is the only way to draw
+         * the shape without computing pixel geometry that would then have to
+         * agree with the CSS grid.
+         *
+         * Together with the green fill of the zeros already achieved, this
+         * reads as a progress bar: the outline is the container, the fill is
+         * how far along it you are. */
+        if (inReq) {
+          var col = k % 32;
+          if (k < 32) cls += " rq-top";
+          if (col === 0) cls += " rq-left";
+          if (col === 31 || k + 1 >= required) cls += " rq-right";
+          if (k + 32 >= required) cls += " rq-bottom";
+
+          /* A 1 where the target demands a 0. Every one of these breaks the
+           * requirement, and the most significant is the one that actually
+           * decides it — a single 1 above everything else already puts the
+           * value over target no matter what follows. */
+          if (bit) {
+            cls += " violate";
+            if (k === achieved) cls += " violate-first";
+          }
+        }
         /* The leading zeros this digest actually has, as a filled block.
          * Fill rather than an edge, because the two markers already on the
          * raster use edges: a colour channel each, so none of the three can
@@ -256,7 +284,11 @@
         cell.title = "PoW bit " + k + " · digest byte " + loc.byteIndex +
           " bit " + loc.bitInByte + " · value " + bit +
           (k < achieved ? " · inside this digest's leading zeros" : "") +
-          (k < required ? " · must be zero at this difficulty" : "") +
+          (inReq ? " · must be zero at this difficulty" : "") +
+          (inReq && bit
+            ? (k === achieved ? " · VIOLATION, and the decisive one"
+                              : " · violates the requirement")
+            : "") +
           (k === sessionBest ? " · best this session reached here" : "");
       }
 
@@ -276,6 +308,12 @@
         " leading zero bits</span>" +
         '<span class="n ' + (pass ? "pass" : "fail") + '">this digest has ' +
         achieved + "</span></div>";
+
+      html += '<div class="rc-row rc-key">' +
+        '<span class="key-outline"></span>zeros required' +
+        '<span class="key-fill"></span>zeros achieved' +
+        '<span class="key-bad"></span>1 where a 0 is required' +
+        "</div>";
 
       if (sessionBest >= 0) {
         var reached = sessionBest >= required;
