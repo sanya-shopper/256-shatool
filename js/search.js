@@ -207,6 +207,96 @@
   }
 
   /**
+   * A resumable scan over every *pair* of single-bit flips.
+   *
+   * There are n(n-1)/2 pairs — 131,328 for a 513-bit message — and each costs
+   * a hash, so a full scan is a second or more of solid computation. Done in
+   * one call that would freeze the page for the duration and show nothing
+   * while it did. So this is a cursor: `step(budget)` advances it by at most
+   * `budget` pairs and returns, letting the caller spread the scan across
+   * animation frames and report progress between them.
+   *
+   * The message is restored after every individual pair, never merely at the
+   * end of a step. That is what makes pausing between frames safe: whatever
+   * renders in the gap sees the original message, not a half-applied probe.
+   *
+   * Pairs are not a superset of singles — this scan never tries a one-bit
+   * change — so its winner can be worse than the best single flip. The two
+   * are reported side by side rather than one being presented as an
+   * improvement on the other.
+   *
+   * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED by apply()
+   */
+  function createPairScan(msg) {
+    var n = msg.nbits;
+    var total = n < 2 ? 0 : (n * (n - 1)) / 2;
+    var base = n === 0 ? null : S.hashEx(msg.bytes, msg.nbits);
+
+    var i = 0, j = 1, tested = 0;
+    var bestI = -1, bestJ = -1, bestDigest = null;
+
+    function snapshot(done) {
+      return {
+        done: done,
+        tested: tested,
+        total: total,
+        bestI: bestI,
+        bestJ: bestJ,
+        bestDigest: bestDigest,
+        base: base,
+      };
+    }
+
+    return {
+      total: total,
+
+      /** Advance by at most `budget` pairs. */
+      step: function (budget) {
+        var count = 0;
+        while (i < n - 1 && count < budget) {
+          M.toggleBit(msg, i);
+          M.toggleBit(msg, j);
+          var d = S.hashEx(msg.bytes, msg.nbits);
+          M.toggleBit(msg, j);
+          M.toggleBit(msg, i);
+
+          if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
+            bestDigest = d; bestI = i; bestJ = j;
+          }
+          tested++; count++;
+
+          j++;
+          if (j >= n) { i++; j = i + 1; }
+        }
+        return snapshot(i >= n - 1);
+      },
+
+      /**
+       * Apply the winning pair to the message.
+       * @returns {Object|null} the same shape bestSingleFlip returns
+       */
+      apply: function () {
+        if (bestI < 0) return null;
+        M.toggleBit(msg, bestI);
+        M.toggleBit(msg, bestJ);
+        var improved = P.compareValues(bestDigest, base) < 0;
+        var delta = improved
+          ? P.sub256(base, bestDigest).diff
+          : P.sub256(bestDigest, base).diff;
+        return {
+          indices: [bestI, bestJ],
+          before: base,
+          after: bestDigest,
+          improved: improved,
+          delta: delta,
+          log2Delta: P.log2Value(delta),
+          tested: tested,
+        };
+      },
+    };
+  }
+
+  /**
    * Expected number of samples to reach `bits` leading zeros, as 2^bits.
    *
    * Each sample is an independent draw from what is, for this purpose, a
@@ -226,6 +316,7 @@
     windowEnd: windowEnd,
     run: run,
     bestSingleFlip: bestSingleFlip,
+    createPairScan: createPairScan,
     expectedAttempts: expectedAttempts,
   });
 })(typeof globalThis !== "undefined" ? globalThis : this);

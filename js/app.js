@@ -69,8 +69,11 @@
       rate2: 0,           // measured samples per second
     },
 
-    /** Result of the last "best single flip" scan, or null. */
+    /** Result of the last flip scan, single or pair, or null. */
     flip: null,
+
+    /** Progress of a running pair scan, or null when none is running. */
+    pairProgress: null,
 
     error: null,
   };
@@ -333,6 +336,12 @@
       s.found = false;
       s.rate2 = 0;
       state.flip = null;
+      /* A pair scan in flight is abandoned too: its cursor is discarded and
+       * the message is already whole, because the scan restores it after
+       * every individual pair rather than only at the end. */
+      if (pairRaf !== null) { caf(pairRaf); pairRaf = null; }
+      pairScan = null;
+      state.pairProgress = null;
       render();
     },
     onBestFlip: function () {
@@ -344,17 +353,75 @@
       var before = P.leadingZeroBits(state.analysis.digest);
       var res = Q.bestSingleFlip(state.msg);
       if (!res) { state.flip = null; refresh(); return; }
-      state.flip = {
-        index: res.index,
-        tested: res.tested,
-        improved: res.improved,
-        log2Delta: res.log2Delta,
-        zerosBefore: before,
-        zerosAfter: P.leadingZeroBits(res.after),
-      };
+      state.flip = flipResult("single", [res.index], res, before);
       refresh();
     },
+
+    onBestPair: function () {
+      /* Not synchronous. There are n(n-1)/2 pairs — 131,328 for the default
+       * message — so a full scan is over a second of solid hashing. Run in
+       * one go it would freeze the page and show nothing while it did, so it
+       * is spread across animation frames with a progress readout. */
+      if (pairScan) return;
+      stopSearch();
+      if (state.msg.nbits < 2) return;
+      pairScan = {
+        scan: Q.createPairScan(state.msg),
+        zerosBefore: P.leadingZeroBits(state.analysis.digest),
+      };
+      state.pairProgress = { tested: 0, total: pairScan.scan.total };
+      render();
+      pairRaf = raf(pairFrame);
+    },
   };
+
+  /** Normalise either flip scan's result into what the UI displays. */
+  function flipResult(kind, indices, res, zerosBefore) {
+    return {
+      kind: kind,
+      indices: indices,
+      tested: res.tested,
+      improved: res.improved,
+      log2Delta: res.log2Delta,
+      zerosBefore: zerosBefore,
+      zerosAfter: P.leadingZeroBits(res.after),
+    };
+  }
+
+  /* Pairs scanned between redraws. Chosen so a frame's work stays in the
+   * region of ten milliseconds, which keeps the progress readout moving
+   * smoothly without making the scan take noticeably longer overall. */
+  var PAIR_BUDGET = 3000;
+  var pairScan = null;
+  var pairRaf = null;
+
+  function pairFrame() {
+    pairRaf = null;
+    if (!pairScan) return;
+
+    var progress = pairScan.scan.step(PAIR_BUDGET);
+    state.pairProgress = {
+      tested: progress.tested,
+      total: progress.total,
+      bestI: progress.bestI,
+      bestJ: progress.bestJ,
+    };
+
+    if (!progress.done) {
+      render();
+      pairRaf = raf(pairFrame);
+      return;
+    }
+
+    /* Finished: apply the winner and let the ordinary render path animate the
+     * change, exactly as it does for a single flip. */
+    var zerosBefore = pairScan.zerosBefore;
+    var res = pairScan.scan.apply();
+    pairScan = null;
+    state.pairProgress = null;
+    state.flip = res ? flipResult("pair", res.indices, res, zerosBefore) : null;
+    refresh();
+  }
 
   // -------------------------------------------------------------------
   // Start

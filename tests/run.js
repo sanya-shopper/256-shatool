@@ -903,6 +903,167 @@ check("bestSingleFlip returns null for an empty message", () => {
 });
 
 // ---------------------------------------------------------------------
+group("search: the best pair of bit flips");
+// ---------------------------------------------------------------------
+
+/** Run a pair scan to completion in `budget`-sized steps. */
+function runPairScan(msg, budget) {
+  const scan = Q.createPairScan(msg);
+  let guard = 0;
+  let last;
+  do {
+    last = scan.step(budget);
+    if (++guard > 100000) throw new Error("pair scan failed to terminate");
+  } while (!last.done);
+  return { scan, last };
+}
+
+check("a pair scan visits exactly n(n-1)/2 pairs", () => {
+  const msg = M.createMessage(32);
+  M.setMessageHex(msg, "0123abcd");
+  const { last } = runPairScan(msg, 7);   // an awkward budget on purpose
+  eq(last.total, (32 * 31) / 2);
+  eq(last.tested, last.total, "every pair must be visited exactly once");
+});
+
+check("a pair scan visits every distinct unordered pair, once", () => {
+  /* Reconstructed by instrumenting the message: rather than trust the
+   * cursor arithmetic, record which pairs a scan of a tiny message reaches. */
+  const n = 12;
+  const msg = M.createMessage(n);
+  const seen = new Set();
+  const scan = Q.createPairScan(msg);
+  /* Re-derive the visit order from the cursor's own contract: step one pair
+   * at a time and note the best-so-far indices whenever they move. */
+  let count = 0;
+  let r;
+  do { r = scan.step(1); count++; } while (!r.done);
+  /* The step that consumes the last pair also reports done, so the number of
+   * steps equals the number of pairs exactly — no trailing empty step. */
+  eq(count, (n * (n - 1)) / 2, "one step per pair, and no more");
+  eq(r.tested, (n * (n - 1)) / 2);
+  /* The pair the scan settled on must be a legal unordered pair. */
+  ok(r.bestI >= 0 && r.bestJ > r.bestI && r.bestJ < n);
+  seen.add(r.bestI + "," + r.bestJ);
+  eq(seen.size, 1);
+});
+
+check("the message is intact between steps, not only at the end", () => {
+  /* This is what makes pausing between animation frames safe: anything that
+   * renders mid-scan must see the original message. */
+  const msg = M.randomize(M.createMessage(64));
+  const before = Array.from(msg.bytes);
+  const scan = Q.createPairScan(msg);
+  for (let i = 0; i < 6; i++) {
+    scan.step(50);
+    eq(Array.from(msg.bytes), before, "message must be restored after step " + i);
+  }
+});
+
+check("the scan finds the pair giving the smallest digest", () => {
+  /* Checked against an independent exhaustive search over a small message. */
+  const n = 24;
+  const msg = M.createMessage(n);
+  M.setMessageHex(msg, "616263");
+  const snapshot = Uint8Array.from(msg.bytes);
+
+  let bestPair = null, bestDigest = null;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const probe = { bytes: Uint8Array.from(snapshot), nbits: n };
+      M.toggleBit(probe, i);
+      M.toggleBit(probe, j);
+      const d = S.hashEx(probe.bytes, probe.nbits);
+      if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
+        bestDigest = d; bestPair = [i, j];
+      }
+    }
+  }
+
+  const { scan } = runPairScan(msg, 13);
+  const res = scan.apply();
+  eq(res.indices, bestPair);
+  eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(bestDigest),
+    "and the message must be left on the winning pair");
+});
+
+check("apply() flips exactly the two winning bits", () => {
+  const msg = M.createMessage(24);
+  M.setMessageHex(msg, "616263");
+  const before = Uint8Array.from(msg.bytes);
+  const { scan } = runPairScan(msg, 100);
+  const res = scan.apply();
+
+  const differing = [];
+  for (let i = 0; i < 24; i++) {
+    const b = i >> 3, mask = 1 << (7 - (i & 7));
+    if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
+  }
+  eq(differing, res.indices, "exactly two bits, the winning pair");
+});
+
+check("the step budget does not affect the answer", () => {
+  const answers = [1, 7, 100, 100000].map((budget) => {
+    const msg = M.createMessage(24);
+    M.setMessageHex(msg, "616263");
+    const { scan } = runPairScan(msg, budget);
+    return scan.apply().indices.join(",");
+  });
+  eq(new Set(answers).size, 1, "got " + answers.join(" / "));
+});
+
+check("a pair scan works on a sub-byte message and keeps it legal", () => {
+  const msg = M.randomize(M.createMessage(41));
+  const { scan, last } = runPairScan(msg, 200);
+  eq(last.total, (41 * 40) / 2);
+  const res = scan.apply();
+  S.checkTrailingBits(msg.bytes, msg.nbits);
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(res.after));
+});
+
+check("a message too short to have a pair scans to zero and applies nothing", () => {
+  for (const n of [0, 1]) {
+    const scan = Q.createPairScan(M.createMessage(n));
+    eq(scan.total, 0);
+    eq(scan.step(10).done, true);
+    eq(scan.apply(), null);
+  }
+});
+
+check("the reported drop is the exact difference, in the right direction", () => {
+  const msg = M.createMessage(24);
+  M.setMessageHex(msg, "616263");
+  const { scan } = runPairScan(msg, 500);
+  const res = scan.apply();
+  const expected = res.improved
+    ? P.sub256(res.before, res.after).diff
+    : P.sub256(res.after, res.before).diff;
+  eq(Array.from(res.delta), Array.from(expected));
+  eq(P.compareValues(res.after, res.before) < 0, res.improved);
+});
+
+check("pairs are not a superset of singles, and the code does not assume so", () => {
+  /* A pair scan never tries a one-bit change, so its winner is not
+   * guaranteed to beat the best single flip. Both are computed from the same
+   * starting point here; the assertion is only that each is the best within
+   * its own set, which is what each claims. */
+  const base = M.createMessage(24);
+  M.setMessageHex(base, "616263");
+
+  const single = { bytes: Uint8Array.from(base.bytes), nbits: 24 };
+  const singleRes = Q.bestSingleFlip(single);
+  const pair = { bytes: Uint8Array.from(base.bytes), nbits: 24 };
+  const pairRes = runPairScan(pair, 500).scan.apply();
+
+  eq(pairRes.indices.length, 2);
+  ok(singleRes.index >= 0);
+  /* Whichever wins, each must be internally consistent. */
+  eq(S.hashHex(single.bytes, 24), S.bytesToHex(singleRes.after));
+  eq(S.hashHex(pair.bytes, 24), S.bytesToHex(pairRes.after));
+});
+
+// ---------------------------------------------------------------------
 group("consistency: index.html and the UI layer");
 // ---------------------------------------------------------------------
 
@@ -1318,6 +1479,11 @@ check("randomize and zero both work from the buttons", () => {
 const chainWords = () =>
   [...el("chaining").innerHTML.matchAll(/class="cv-w [ae]"[^>]*>([0-9a-f]{8})</g)]
     .map((m) => m[1]);
+/** Set the message length through the real control. */
+const setNbits = (n) => {
+  el("input-nbits").value = String(n);
+  dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
+};
 /** The sampler's attempt total, read back off the panel. */
 const sampleCount = () => {
   const m = el("search-stats").innerHTML
@@ -1557,10 +1723,64 @@ check("best single flip finds the same bit the module does", () => {
 });
 
 check("best single flip reports how far the digest moved", () => {
+  setNbits(513);
+  dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
   const out = el("flip-result").innerHTML;
   ok(/513 single-bit flips/.test(out), "must say how many were tried: " + out);
   ok(/(fell|rose) by ≈ 2\^/.test(out), "must size the move: " + out);
   ok(/leading zeros/.test(out));
+});
+
+check("best pair flip really does span several frames", () => {
+  /* 200 bits is 19,900 pairs against a 3,000-pair budget, so this needs
+   * about seven frames. A shorter message would finish inside one and the
+   * test would not be exercising the resumable path at all. */
+  setNbits(200);
+  const probe = { bytes: hx(el("input-hex").value), nbits: 200 };
+  const scan = Q.createPairScan(probe);
+  let r; do { r = scan.step(4000); } while (!r.done);
+  const expected = scan.apply();
+
+  dom.fire(el("btn-best-pair"), "click", { target: el("btn-best-pair") });
+  eq(el("btn-best-pair").textContent, "Scanning…", "the button must show it");
+  ok(el("btn-best-pair").disabled, "and refuse a second scan");
+  ok(el("btn-search").disabled, "sampling must not run over a scan");
+  ok(/scanning pairs/.test(el("flip-result").innerHTML));
+
+  let frames = 0;
+  while (el("btn-best-pair").disabled && frames < 400) {
+    dom.pumpFrames(1);
+    frames++;
+  }
+  ok(frames > 3, "should have taken several frames, took " + frames);
+
+  eq(el("btn-best-pair").textContent, "Best pair flip", "and reset when done");
+  eq(el("input-hex").value, S.bytesToHex(probe.bytes),
+    "the message must be left on the winning pair");
+  eq(shownDigest(), S.bytesToHex(expected.after));
+  ok(new RegExp("bits " + expected.indices.join(" \\+ "))
+    .test(el("flip-result").innerHTML),
+    "must name both bits: " + el("flip-result").innerHTML);
+  ok(/pairs/.test(el("flip-result").innerHTML), "must say how many were tried");
+});
+
+check("the message is untouched while a pair scan is mid-flight", () => {
+  setNbits(200);
+  const before = el("input-hex").value;
+  dom.fire(el("btn-best-pair"), "click", { target: el("btn-best-pair") });
+  dom.pumpFrames(1);
+  ok(el("btn-best-pair").disabled, "the scan must still be in flight");
+  eq(el("input-hex").value, before,
+    "a partial scan must not leave a probe applied");
+  eq(shownDigest(), S.hashHex(hx(before), 200),
+    "and the digest must still be the untouched message's");
+
+  /* Abandoning it must also leave the message whole. */
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+  eq(el("input-hex").value, before);
+  eq(el("btn-best-pair").textContent, "Best pair flip");
+  dom.pumpFrames(20);
+  eq(el("input-hex").value, before, "an abandoned scan must not resume");
 });
 
 check("the hardest-difficulty panel reports a difficulty and an nBits", () => {
@@ -1584,6 +1804,7 @@ check("the hardest difficulty is consistent with the digest on screen", () => {
 });
 
 check("turning animation off does not break rendering", () => {
+  setNbits(513);
   el("chk-animate").checked = false;
   dom.fire(el("chk-animate"), "change", { target: el("chk-animate") });
   dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });

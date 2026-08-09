@@ -76,8 +76,9 @@
       <span class="unit">leading zero bits</span>
     </div>
 
-    <div class="control-row">
-      <label for="search-rate">Per frame</label>
+    <div class="control-row"
+         title="How many samples are drawn between redraws. The screen redraws about 60 times a second, so 500 here is roughly 30,000 samples per second. Lower it to watch individual samples; raise it to search faster.">
+      <label for="search-rate">Per redraw</label>
       <input type="number" id="search-rate" min="1" max="200000" step="1" value="500">
       <span class="unit">samples</span>
     </div>
@@ -91,7 +92,9 @@
 
     <div class="control-row" style="margin-top:10px">
       <button type="button" id="btn-best-flip"
-              title="Flip each input bit in turn and keep whichever one lowers the digest value most">Best single flip</button>
+              title="Try every one-bit change and keep whichever lowers the digest value most">Best single flip</button>
+      <button type="button" id="btn-best-pair"
+              title="Try every two-bit change and keep whichever lowers the digest value most">Best pair flip</button>
     </div>
 
     <div id="flip-result" class="summary"></div>

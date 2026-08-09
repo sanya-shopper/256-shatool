@@ -57,6 +57,7 @@
     var elSearchReset = document.getElementById("btn-search-reset");
     var elSearchStats = document.getElementById("search-stats");
     var elBestFlip = document.getElementById("btn-best-flip");
+    var elBestPair = document.getElementById("btn-best-pair");
     var elFlipResult = document.getElementById("flip-result");
 
     /* What the current DOM structure was built for. When either of these
@@ -101,6 +102,7 @@
     elSearchBtn.addEventListener("click", function () { cb.onToggleSearch(); });
     elSearchReset.addEventListener("click", function () { cb.onResetSearch(); });
     elBestFlip.addEventListener("click", function () { cb.onBestFlip(); });
+    elBestPair.addEventListener("click", function () { cb.onBestPair(); });
 
     /* Delegated handlers on the grid: one listener each rather than two per
      * byte, so rebuilding the grid never leaks listeners. */
@@ -303,11 +305,16 @@
       elSearchWindowLabel.textContent = s.window.width +
         (s.window.width === 1 ? " bit" : " bits");
 
+      var scanning = state.pairProgress !== null;
       elSearchBtn.textContent = s.running ? "Pause" : "Start sampling";
       elSearchBtn.classList.toggle("running", s.running);
-      /* A zero-length message has no window to resample. */
-      elSearchBtn.disabled = state.msg.nbits === 0;
-      elBestFlip.disabled = state.msg.nbits === 0 || s.running;
+      /* A zero-length message has no window to resample, and nothing else may
+       * touch the message while a pair scan is walking it. */
+      elSearchBtn.disabled = state.msg.nbits === 0 || scanning;
+      elBestFlip.disabled = state.msg.nbits === 0 || s.running || scanning;
+      elBestPair.disabled = state.msg.nbits < 2 || s.running || scanning;
+      elBestPair.classList.toggle("running", scanning);
+      elBestPair.textContent = scanning ? "Scanning…" : "Best pair flip";
 
       var expected = Math.pow(2, s.threshold);
       var rows = [
@@ -330,14 +337,21 @@
       paintFlip(state);
     }
 
-    /** The outcome of the last "best single flip" scan. */
+    /**
+     * Either the progress of a running pair scan or the outcome of the last
+     * completed scan — never both, since one replaces the other.
+     */
     function paintFlip(state) {
+      if (state.pairProgress) { paintPairProgress(state.pairProgress); return; }
+
       var f = state.flip;
       if (!f) { elFlipResult.innerHTML = ""; return; }
+
+      var pair = f.kind === "pair";
       var dir = f.improved ? "fell" : "rose";
       var rows = [
-        ["tested", f.tested + " single-bit flips"],
-        ["kept", "bit " + f.index],
+        ["tested", fmtCount(f.tested) + (pair ? " pairs" : " single-bit flips")],
+        ["kept", (pair ? "bits " : "bit ") + f.indices.join(" + ")],
         ["digest value", dir + " by ≈ 2^" + f.log2Delta.toFixed(1)],
         ["leading zeros", f.zerosBefore + " → " + f.zerosAfter],
       ];
@@ -348,9 +362,24 @@
           '">' + rows[i][1] + "</span></div>";
       }
       if (!f.improved) {
-        html += '<div class="row"><span class="hint-inline">no single flip ' +
-          "lowered it; this was the smallest rise</span></div>";
+        html += '<div class="row"><span class="hint-inline">no ' +
+          (pair ? "pair" : "single flip") +
+          " lowered it; this was the smallest rise</span></div>";
       }
+      elFlipResult.innerHTML = html;
+    }
+
+    function paintPairProgress(p) {
+      var pct = p.total > 0 ? Math.floor((p.tested / p.total) * 100) : 100;
+      var html = '<div class="row"><span>scanning pairs</span>' +
+        '<span class="n">' + pct + "%</span></div>" +
+        '<div class="row"><span>tested</span><span class="n">' +
+        fmtCount(p.tested) + " of " + fmtCount(p.total) + "</span></div>";
+      if (p.bestI !== undefined && p.bestI >= 0) {
+        html += '<div class="row"><span>best so far</span><span class="n">bits ' +
+          p.bestI + " + " + p.bestJ + "</span></div>";
+      }
+      html += '<div class="progress"><span style="width:' + pct + '%"></span></div>';
       elFlipResult.innerHTML = html;
     }
 
