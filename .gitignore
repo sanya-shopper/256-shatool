@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+
+# Editors
+*~
+*.swp
+.vscode/
+.idea/
+
+# Build output
+build/
+dist/
+*.o
+*.a
+
+# LaTeX intermediates (the .pdf is a build product; see CLAUDE.md rule A1)
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.fls
+*.fdb_latexmk
+*.synctex.gz
