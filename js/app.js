@@ -396,18 +396,10 @@
       cancelFlipScan();
       render();
     },
-    onBestFlip: function () {
-      /* Synchronous: one hash per input bit, which for any message this tool
-       * will hold is a few hundred hashes and finishes well inside a frame.
-       * The change it makes is animated by the canvas afterglow like any
-       * other edit, so the result is visible without the scan being staged. */
-      stopSearch();
-      var before = P.leadingZeroBits(state.analysis.digest);
-      var res = Q.bestSingleFlip(state.msg);
-      if (!res) { state.flip = null; refresh(); return; }
-      state.flip = flipResult(res, before);
-      refresh();
-    },
+    /* All three widths go through startFlipScan, which decides for itself
+     * whether the combination count is small enough to run in one go. Width 1
+     * on any message this tool holds always is. */
+    onBestFlip: function () { startFlipScan(1); },
 
     onBestPair: function () { startFlipScan(2); },
 
@@ -452,6 +444,48 @@
   var flipScan = null;
   var flipRaf = null;
 
+  /** A copy of the message with `indices` flipped, without disturbing it. */
+  function bytesWithFlips(msg, indices) {
+    var probe = { bytes: Uint8Array.from(msg.bytes), nbits: msg.nbits };
+    for (var i = 0; i < indices.length; i++) M.toggleBit(probe, indices[i]);
+    return probe.bytes;
+  }
+
+  /**
+   * Fold a flip scan's progress into the search session.
+   *
+   * A scan is a search over the input space just as sampling is, so it feeds
+   * the same counters: the points-tried total, the best leading-zero count,
+   * and the bytes that achieved it — which means a scan can improve the point
+   * a later pause rewinds to.
+   *
+   * The best-valued digest is also the one with the most leading zeros, so no
+   * separate tracking is needed: leading zeros are determined by the position
+   * of the highest set bit, so a smaller value can only have more of them.
+   *
+   * One thing this deliberately does not do is treat scan probes as random
+   * draws. They are systematic, so the "expected at random" figure beside the
+   * total is not a prediction of them; the panel labels it accordingly.
+   *
+   * @param {Object} progress a scan snapshot
+   * @param {number} counted how many of its probes are already counted
+   * @returns {number} the new counted total
+   */
+  function recordScanProgress(progress, counted) {
+    var s = state.search;
+    s.attempts += progress.tested - counted;
+
+    if (progress.bestDigest) {
+      var lz = P.leadingZeroBits(progress.bestDigest);
+      if (lz > s.best) {
+        s.best = lz;
+        s.bestBytes = bytesWithFlips(state.msg, progress.bestIndices);
+        s.bestNbits = state.msg.nbits;
+      }
+    }
+    return progress.tested;
+  }
+
   /**
    * Begin (or immediately complete) a scan of `n`-bit flips.
    *
@@ -462,22 +496,33 @@
   function startFlipScan(n) {
     if (flipScan) return;
     stopSearch();
-    if (state.msg.nbits < n) return;
 
-    var scan = Q.createFlipScan(state.msg, n);
+    /* Scans cover the same contiguous range the sampler resamples, not the
+     * whole message. Besides being the more useful question — "what is the
+     * best I can do by changing these bits" — it is what keeps wider scans
+     * finishable: C(64,3) over a 64-bit range is 41,664, against 22,369,536
+     * over all 513 bits. */
+    var win = state.search.window;
+    if (win.width < n) return;
+
+    var scan = Q.createFlipScan(state.msg, n, win);
     if (scan.total === 0) return;
 
     var zerosBefore = P.leadingZeroBits(state.analysis.digest);
 
     if (scan.total <= SYNC_LIMIT) {
-      scan.step(scan.total);
+      /* Recorded before apply(), while the message is still unflipped — that
+       * is what bytesWithFlips() expects to be handed. */
+      recordScanProgress(scan.step(scan.total), 0);
       var res = scan.apply();
       state.flip = res ? flipResult(res, zerosBefore) : null;
       refresh();
       return;
     }
 
-    flipScan = { scan: scan, zerosBefore: zerosBefore, startedAt: now() };
+    flipScan = {
+      scan: scan, zerosBefore: zerosBefore, startedAt: now(), counted: 0,
+    };
     state.flipProgress = {
       n: n, tested: 0, total: scan.total, bestIndices: null, etaSeconds: null,
     };
@@ -498,6 +543,8 @@
     if (!flipScan) return;
 
     var progress = flipScan.scan.step(SCAN_BUDGET);
+    flipScan.counted = recordScanProgress(progress, flipScan.counted);
+
     var elapsed = (now() - flipScan.startedAt) / 1000;
     var rate = elapsed > 0 ? progress.tested / elapsed : 0;
 

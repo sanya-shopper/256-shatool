@@ -1185,6 +1185,74 @@ check("a width wider than the message scans nothing and applies nothing", () => 
   eq(scan.apply(), null);
 });
 
+check("a ranged scan counts C(range width, n), not C(message, n)", () => {
+  const msg = M.randomize(M.createMessage(513));
+  eq(Q.createFlipScan(msg, 3, { start: 449, width: 64 }).total,
+    Q.combinations(64, 3));
+  eq(Q.createFlipScan(msg, 3, { start: 449, width: 64 }).total, 41664);
+  eq(Q.createFlipScan(msg, 3).total, Q.combinations(513, 3),
+    "no range means the whole message");
+});
+
+check("a ranged scan never touches a bit outside the range", () => {
+  const msg = M.randomize(M.createMessage(120));
+  const before = Array.from(msg.bytes);
+  const range = { start: 40, width: 24 };
+  const scan = Q.createFlipScan(msg, 2, range);
+  let r; do { r = scan.step(29); } while (!r.done);
+  eq(r.tested, Q.combinations(24, 2));
+
+  const res = scan.apply();
+  for (const i of res.indices) {
+    ok(i >= 40 && i < 64, "index " + i + " must lie inside the range");
+  }
+  /* And the bits that did move are exactly the winning pair. */
+  const differing = [];
+  for (let i = 0; i < 120; i++) {
+    const b = i >> 3, mask = 1 << (7 - (i & 7));
+    if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
+  }
+  eq(differing, res.indices);
+});
+
+check("a ranged scan finds the best within the range, not overall", () => {
+  /* The distinction matters: the globally best flip usually lies outside a
+     narrow range, and a ranged scan must not find it. */
+  const n = 40;
+  const msg = M.randomize(M.createMessage(n));
+  const snapshot = Uint8Array.from(msg.bytes);
+  const range = { start: 8, width: 10 };   // bits 8..17
+
+  let best = -1, bestDigest = null;
+  for (let i = range.start; i < range.start + range.width; i++) {
+    const probe = { bytes: Uint8Array.from(snapshot), nbits: n };
+    M.toggleBit(probe, i);
+    const d = S.hashEx(probe.bytes, probe.nbits);
+    if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
+      bestDigest = d; best = i;
+    }
+  }
+
+  const res = Q.bestSingleFlip(msg, range);
+  eq(res.indices, [best]);
+  eq(res.tested, 10, "ten candidates, not forty");
+  eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
+});
+
+check("a range narrower than n yields nothing", () => {
+  const msg = M.randomize(M.createMessage(100));
+  const scan = Q.createFlipScan(msg, 4, { start: 10, width: 3 });
+  eq(scan.total, 0);
+  eq(scan.step(10).done, true);
+  eq(scan.apply(), null);
+});
+
+check("a ranged scan reports the range it used", () => {
+  const msg = M.randomize(M.createMessage(64));
+  const r = Q.createFlipScan(msg, 2, { start: 16, width: 8 }).step(1);
+  eq(r.range, { start: 16, width: 8 });
+});
+
 check("width 1 through the general scanner equals bestSingleFlip", () => {
   const a = M.randomize(M.createMessage(64));
   const b = { bytes: Uint8Array.from(a.bytes), nbits: 64 };
@@ -1676,10 +1744,16 @@ const setNbits = (n) => {
   el("input-nbits").value = String(n);
   dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
 };
+/** Set the sampling range through the real controls, inclusive. */
+const setRange = (a, b) => {
+  el("search-start").value = String(a);
+  el("search-end").value = String(b);
+  dom.fire(el("search-end"), "change", { target: el("search-end") });
+};
 /** The sampler's attempt total, read back off the panel. */
 const sampleCount = () => {
   const m = el("search-stats").innerHTML
-    .match(/samples<\/span><span class="n">([\d,]+)</);
+    .match(/points tried<\/span><span class="n">([\d,]+)</);
   return m ? Number(m[1].replace(/,/g, "")) : -1;
 };
 const selectBlock = (i) => dom.fire(el("block-tabs"), "click",
@@ -1892,8 +1966,8 @@ check("a run stops by itself when the threshold is reached", () => {
 check("the raster caption reports the session's best, and marks it", () => {
   /* Runs after a completed sampling run, so there is a session to report. */
   const caption = el("digest-bit-caption").innerHTML;
-  ok(/best this sampling session/.test(caption), caption);
-  const m = caption.match(/best this sampling session<\/span><span class="n[^"]*">(\d+) in ([\d,]+) samples/);
+  ok(/best this search session/.test(caption), caption);
+  const m = caption.match(/best this search session<\/span><span class="n[^"]*">(\d+) in ([\d,]+) points/);
   ok(m, "must give the count and the sample total: " + caption);
 
   const best = Number(m[1]);
@@ -1917,7 +1991,7 @@ check("the session best is absent before any sampling has happened", () => {
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
   const caption = el("digest-bit-caption").innerHTML;
   ok(/target needs ≥/.test(caption), "the requirement is always shown");
-  ok(!/best this sampling session/.test(caption),
+  ok(!/best this search session/.test(caption),
     "but there is no session to report: " + caption);
   eq(cellsIn("digest-bit-raster", "sess-best").length, 0, "and no marker");
 });
@@ -1950,10 +2024,13 @@ check("reset clears the counters", () => {
 
 check("best single flip finds the same bit the module does", () => {
   /* Compute the answer independently from the message on screen, then press
-   * the button and check the UI agrees. */
+   * the button and check the UI agrees. Scans cover the sampling range, so
+   * the range is set to the whole message explicitly here. */
+  setNbits(513);
+  setRange(0, 512);
   const hexBefore = el("input-hex").value;
   const probe = { bytes: hx(hexBefore), nbits: 513 };
-  const expected = Q.bestSingleFlip(probe);
+  const expected = Q.bestSingleFlip(probe, { start: 0, width: 513 });
 
   dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
 
@@ -1967,6 +2044,7 @@ check("best single flip finds the same bit the module does", () => {
 
 check("best single flip reports how far the digest moved", () => {
   setNbits(513);
+  setRange(0, 512);
   dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
   const out = el("flip-result").innerHTML;
   ok(/513 single-bit flips/.test(out), "must say how many were tried: " + out);
@@ -1980,8 +2058,9 @@ check("best pair flip really does span several frames", () => {
    * message would finish in one go and the test would not be exercising the
    * resumable path at all. */
   setNbits(250);
+  setRange(0, 249);
   const probe = { bytes: hx(el("input-hex").value), nbits: 250 };
-  const scan = Q.createFlipScan(probe, 2);
+  const scan = Q.createFlipScan(probe, 2, { start: 0, width: 250 });
   let r; do { r = scan.step(4000); } while (!r.done);
   const expected = scan.apply();
 
@@ -2012,6 +2091,7 @@ check("best pair flip really does span several frames", () => {
 
 check("the message is untouched while a pair scan is mid-flight", () => {
   setNbits(250);
+  setRange(0, 249);
   const before = el("input-hex").value;
   dom.fire(el("btn-best-pair"), "click", { target: el("btn-best-pair") });
   dom.pumpFrames(1);
@@ -2031,6 +2111,7 @@ check("the message is untouched while a pair scan is mid-flight", () => {
 
 check("the n-flip control reports the count and an estimated time", () => {
   setNbits(513);
+  setRange(0, 512);
   const setN = (n) => {
     el("flip-n").value = String(n);
     dom.fire(el("flip-n"), "change", { target: el("flip-n") });
@@ -2044,10 +2125,29 @@ check("the n-flip control reports the count and an estimated time", () => {
   setN(3);
   text = el("flip-n-estimate").textContent;
   ok(/22M combinations/.test(text), text);
+  ok(/over bits 0–512/.test(text), "must name the range it covers: " + text);
+});
+
+check("narrowing the sampling range shrinks the scan enormously", () => {
+  /* This is the whole reason scans are tied to the range: C(513,3) is 22
+     million and takes minutes, C(64,3) is 41,664 and is instant. */
+  setNbits(513);
+  el("flip-n").value = "3";
+  dom.fire(el("flip-n"), "change", { target: el("flip-n") });
+
+  setRange(0, 512);
+  ok(/22M combinations/.test(el("flip-n-estimate").textContent));
+
+  setRange(449, 512);
+  const text = el("flip-n-estimate").textContent;
+  ok(/42k combinations/.test(text), text);
+  ok(/over bits 449–512/.test(text), text);
+  ok(!el("btn-best-n").disabled, "and is now perfectly runnable");
 });
 
 check("a scan that would take too long is refused, and says why", () => {
   setNbits(513);
+  setRange(0, 512);
   el("flip-n").value = "4";              // 2.85 billion combinations
   dom.fire(el("flip-n"), "change", { target: el("flip-n") });
   const text = el("flip-n-estimate").textContent;
@@ -2071,11 +2171,12 @@ check("an n wider than the message is reported, not offered", () => {
 
 check("the n-flip scan applies the winner, agreeing with the module", () => {
   setNbits(32);
+  setRange(0, 31);
   el("flip-n").value = "3";
   dom.fire(el("flip-n"), "change", { target: el("flip-n") });
 
   const probe = { bytes: hx(el("input-hex").value), nbits: 32 };
-  const scan = Q.createFlipScan(probe, 3);
+  const scan = Q.createFlipScan(probe, 3, { start: 0, width: 32 });
   let r; do { r = scan.step(2000); } while (!r.done);
   const expected = scan.apply();
 

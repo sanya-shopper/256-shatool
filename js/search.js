@@ -252,12 +252,14 @@
    * "best" flip is a rise. `improved` says which happened.
    *
    * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED
+   * @param {{start: number, width: number}} [range] defaults to the whole
+   *   message
    * @returns {Object|null} null for a zero-length message
    */
-  function bestSingleFlip(msg) {
+  function bestSingleFlip(msg, range) {
     if (msg.nbits === 0) return null;
-    var scan = createFlipScan(msg, 1);
-    scan.step(msg.nbits);           // one step covers all m combinations
+    var scan = createFlipScan(msg, 1, range);
+    scan.step(scan.total || 1);     // one step covers every combination
     return scan.apply();
   }
 
@@ -301,14 +303,31 @@
    * one's. The UI reports what each found rather than implying one improves
    * on the other.
    *
+   * ---------------------------------------------------------------
+   * The range
+   * ---------------------------------------------------------------
+   *
+   * Combinations are drawn from a contiguous window of the message — the same
+   * window the sampler resamples — rather than from the whole of it. That is
+   * what makes wider scans usable at all: C(513,3) is 22,369,536 and takes
+   * minutes, while C(64,3) over a 64-bit window is 41,664 and is over before
+   * the progress bar appears. Setting the range to the whole message gets the
+   * old behaviour back.
+   *
+   * Positions are enumerated locally, within the window, and reported as
+   * absolute bit indices, so callers never see the offset.
+   *
    * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED by apply()
    * @param {number} n how many bits to flip at once
+   * @param {{start: number, width: number}} [range] defaults to the whole
+   *   message
    */
-  function createFlipScan(msg, n) {
-    var m = msg.nbits;
+  function createFlipScan(msg, n, range) {
+    var start = range ? range.start : 0;
+    var m = range ? range.width : msg.nbits;
     var width = Math.max(1, n | 0);
     var total = combinations(m, width);
-    var base = m === 0 ? null : S.hashEx(msg.bytes, msg.nbits);
+    var base = msg.nbits === 0 ? null : S.hashEx(msg.bytes, msg.nbits);
 
     var idx = null;
     var exhausted = m < width || m === 0;
@@ -333,7 +352,14 @@
     /* Toggling the same set twice restores it, because the positions in a
      * combination are distinct by construction. */
     function toggleAll() {
-      for (var i = 0; i < width; i++) M.toggleBit(msg, idx[i]);
+      for (var i = 0; i < width; i++) M.toggleBit(msg, start + idx[i]);
+    }
+
+    /** The current combination as absolute bit indices. */
+    function absolute() {
+      var out = new Array(width);
+      for (var i = 0; i < width; i++) out[i] = start + idx[i];
+      return out;
     }
 
     function snapshot() {
@@ -342,6 +368,7 @@
         tested: tested,
         total: total,
         n: width,
+        range: { start: start, width: m },
         bestIndices: bestIdx ? bestIdx.slice() : null,
         bestDigest: bestDigest,
         base: base,
@@ -362,7 +389,7 @@
 
           if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
             bestDigest = d;
-            bestIdx = idx.slice();
+            bestIdx = absolute();
           }
           tested++; count++;
           if (!advance()) exhausted = true;

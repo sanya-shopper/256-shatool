@@ -235,11 +235,12 @@
       var required = P.leadingZeroBits(a.target);
       var achieved = a.leadingZeroBits;
 
-      /* The best any sample in the current sampling session reached. -1 until
-       * a session has drawn something; the Reset button clears it. Marked on
-       * the raster as well as counted below it, because the distance between
-       * where the best got to and where the target sits is the whole story of
-       * a run, and it is far more legible as two marks than as two numbers. */
+      /* The best any point in the current search session reached — sampling
+       * runs and flip scans both feed it. -1 until something has been tried;
+       * the Reset button clears it. Marked on the raster as well as counted
+       * below it, because the distance between where the best got to and
+       * where the target sits is the whole story of a search, and it is far
+       * more legible as two marks than as two numbers. */
       var session = state.search;
       var sessionBest = session.attempts > 0 ? session.best : -1;
 
@@ -268,9 +269,9 @@
       if (sessionBest >= 0) {
         var reached = sessionBest >= required;
         html += '<div class="rc-row"><span>' + swatch("--warn") +
-          "best this sampling session</span>" +
+          "best this search session</span>" +
           '<span class="n ' + (reached ? "pass" : "") + '">' + sessionBest +
-          " in " + session.attempts.toLocaleString() + " samples</span></div>";
+          " in " + session.attempts.toLocaleString() + " points</span></div>";
       }
       elRasterCaption.innerHTML = html;
     }

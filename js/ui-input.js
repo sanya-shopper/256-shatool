@@ -343,7 +343,8 @@
       /* A zero-length message has no window to resample, and nothing else may
        * touch the message while a flip scan is walking it. */
       elSearchBtn.disabled = state.msg.nbits === 0 || scanning;
-      elBestFlip.disabled = state.msg.nbits === 0 || s.running || scanning;
+      var win = s.window;
+      elBestFlip.disabled = win.width < 1 || s.running || scanning;
 
       /* Whichever button started the running scan becomes its cancel button;
        * a long scan the user cannot stop is worse than no scan. The single
@@ -353,14 +354,19 @@
       elBestPair.textContent = pairRunning ? "Cancel" : "Best pair flip";
       elBestPair.disabled = pairRunning
         ? false
-        : (state.msg.nbits < 2 || s.running || scanning);
+        : (win.width < 2 || s.running || scanning);
 
       paintFlipN(state, scanning);
 
+      /* "Points tried", not "samples": flip scans feed this counter too, and
+       * their probes are systematic rather than random draws. The expected
+       * figure beside it is therefore labelled as the random-draw
+       * expectation, which is what it is — a yardstick, not a prediction of
+       * a scan. */
       var expected = Math.pow(2, s.threshold);
       var rows = [
-        ["samples", s.attempts.toLocaleString()],
-        ["expected for " + s.threshold + " bits", fmtCount(expected)],
+        ["points tried", s.attempts.toLocaleString()],
+        ["expected at random for " + s.threshold, fmtCount(expected)],
         ["best so far", s.best < 0 ? "—" : s.best + " zero bits"],
       ];
       if (s.rate2 > 0) rows.push(["rate", fmtCount(s.rate2) + " / s"]);
@@ -395,7 +401,10 @@
       if (elFlipN !== document.activeElement) elFlipN.value = String(state.flipN);
       elFlipN.disabled = scanning;
 
-      var total = SEARCH.combinations(state.msg.nbits, state.flipN);
+      /* Over the sampling range, not the whole message — the same range the
+       * fields above set, which is what keeps the counts finishable. */
+      var win = state.search.window;
+      var total = SEARCH.combinations(win.width, state.flipN);
       var seconds = SEARCH.estimateSeconds(total, state.hashRate);
       var tooBig = seconds > SEARCH.MAX_SCAN_SECONDS;
 
@@ -405,15 +414,17 @@
         ? false                        // cancelling is always allowed
         : (scanning || s_running(state) || total === 0 || tooBig);
 
+      var scope = "bits " + win.start + "–" +
+        (win.start + Math.max(0, win.width - 1));
       if (total === 0) {
-        elFlipNEstimate.textContent =
-          "a " + state.msg.nbits + "-bit message has no " + state.flipN +
-          "-bit combinations";
+        elFlipNEstimate.textContent = "the range (" + scope + ", " +
+          win.width + " bits) has no " + state.flipN + "-bit combinations";
         return;
       }
-      var text = fmtCount(total) + " combinations · ≈ " + fmtDuration(seconds);
+      var text = "over " + scope + ": " + fmtCount(total) +
+        " combinations · ≈ " + fmtDuration(seconds);
       if (tooBig) {
-        text += " — too long; lower n or shorten the message";
+        text += " — too long; lower n or narrow the range";
       }
       elFlipNEstimate.textContent = text;
     }
@@ -493,11 +504,18 @@
       var nz = state.neutral;
       if (!nz) { elNeutralSummary.innerHTML = ""; return; }
 
+      /* "Marked" counts the bits that carry a visible mark, which is the
+       * neutral and improving ones. The bits that lose leading zeros are
+       * deliberately left unmarked: past a few leading zeros they are almost
+       * every bit in the message, and marking them would be a wall of colour
+       * saying nothing. */
+      var marked = nz.same + nz.better;
       var rows = [
+        ["bits marked", marked + " of " + nz.map.length],
         ["current leading zeros", String(nz.base)],
         [swatch("--fg-faint") + "no change if flipped", String(nz.same)],
         [swatch("--ok") + "more leading zeros", String(nz.better)],
-        [swatch("--bad") + "fewer leading zeros", String(nz.worse)],
+        ["fewer leading zeros (unmarked)", String(nz.worse)],
       ];
       var html = "";
       for (var i = 0; i < rows.length; i++) {
