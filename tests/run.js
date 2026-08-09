@@ -1611,6 +1611,11 @@ const setNbits = (n) => {
   el("input-nbits").value = String(n);
   dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
 };
+/** Set the sampling goal through the real threshold field. */
+const setThreshold = (n) => {
+  el("search-threshold").value = String(n);
+  dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
+};
 /** Set the difficulty through the real nBits field. */
 const setNBits = (hex) => {
   el("pow-nbits-custom").value = hex;
@@ -1870,24 +1875,47 @@ check("PoW bit 0 is the top bit of the LAST digest byte", () => {
   eq(m[2], "7");
 });
 
-check("the required-zero run matches the target's leading zeros", () => {
-  for (const [nb, expected] of [["0x17034a3f", 78], ["0x1d00ffff", 32]]) {
-    setNBits(nb);
-    eq(cellsIn("digest-bit-raster", "req").length, expected,
-      "required zero bits for nBits=" + nb);
-    ok(new RegExp("needs ≥ " + expected + " leading zero bits")
-      .test(el("digest-bit-caption").innerHTML), "caption for " + nb);
-    /* And that count must equal what the PoW module says about the target,
-     * so the picture and the arithmetic cannot drift apart. */
-    eq(P.leadingZeroBits(P.targetBytes(parseInt(nb, 16))), expected);
+check("the outlined run follows the sampling goal, not the nBits target", () => {
+  /* Deliberately with an nBits whose own requirement is 78, so a raster
+     drawn from the target rather than the goal would be obvious. */
+  setNBits("0x17034a3f");
+  eq(P.leadingZeroBits(P.targetBytes(0x17034a3f)), 78);
+
+  for (const goal of [16, 40]) {
+    setThreshold(goal);
+    eq(cellsIn("digest-bit-raster", "req").length, goal,
+      "the region must be the goal, not the target");
+    ok(new RegExp("goal: ≥ " + goal + " leading zero bits")
+      .test(el("digest-bit-caption").innerHTML), "caption for goal " + goal);
     /* The run must be a prefix — contiguous from bit 0 — or it is not the
-     * black block the panel claims it is. */
+     * block the panel claims it is. */
     const cells = rasterCells();
     for (let k = 0; k < 256; k++) {
-      eq(cells[k].classList.contains("req"), k < expected,
-        "req flag at bit " + k + " for nBits=" + nb);
+      eq(cells[k].classList.contains("req"), k < goal, "req at bit " + k);
     }
   }
+});
+
+check("the real requirement is stated beside the goal, with the ratio", () => {
+  setNBits("0x17034a3f");
+  setThreshold(16);
+  const note = el("threshold-note").textContent;
+  ok(/0x17034a3f/.test(note), note);
+  ok(/needs 78 leading zero bits/.test(note), note);
+  ok(/2\^62 × harder/.test(note), "78 - 16 = 62: " + note);
+
+  setThreshold(64);
+  ok(/2\^14 × harder/.test(el("threshold-note").textContent),
+    el("threshold-note").textContent);
+
+  setNBits("0x1d00ffff");           // genesis: 32 required
+  setThreshold(32);
+  ok(/exactly this goal/.test(el("threshold-note").textContent),
+    el("threshold-note").textContent);
+  setThreshold(40);
+  ok(/2\^8 × easier/.test(el("threshold-note").textContent),
+    el("threshold-note").textContent);
+  setNBits("0x17034a3f");
 });
 
 check("the digest's own leading zeros are marked and counted in the raster", () => {
@@ -1932,29 +1960,29 @@ check("the marked run tracks the digest as it changes", () => {
   ok(achieved >= 6, "the run should have reached the threshold: " + achieved);
   eq(cellsIn("digest-bit-raster", "lz-run").length, achieved);
   eq(el("lz-badge").textContent, achieved + " leading zeros");
-  ok(el("lz-badge").className.indexOf("pass") < 0,
-    "six zeros does not clear a mainnet target, so no pass styling");
+  ok(el("lz-badge").className.indexOf("pass") >= 0,
+    "the goal was 6 and the run met it, so the badge passes");
 });
 
-check("the badge marks a pass when the run reaches the requirement", () => {
+check("the badge passes exactly when the run reaches the goal", () => {
   const achieved = P.leadingZeroBits(hx(shownDigest()));
   ok(achieved >= 6);
-  /* A target whose top byte is nonzero, so it demands no leading zeros at
-     all and any digest clears it. Checked, not assumed. */
-  eq(P.leadingZeroBits(P.targetBytes(0x2100ffff)), 0);
-  setNBits("0x2100ffff");
+  setThreshold(achieved);
   ok(el("lz-badge").className.indexOf("pass") >= 0,
-    "cleared: " + el("lz-badge").className);
-  setNBits("0x17034a3f");
-  ok(el("lz-badge").className.indexOf("pass") < 0);
+    "met: " + el("lz-badge").className);
+  setThreshold(achieved + 1);
+  ok(el("lz-badge").className.indexOf("pass") < 0,
+    "one short: " + el("lz-badge").className);
+  setThreshold(16);
   /* Leave no sampling session behind for the tests that follow. */
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
 });
 
-check("the required-zero region is outlined as a staircase prefix", () => {
-  setNBits("0x17034a3f");
-  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
-  eq(required, 78);
+check("the goal region is outlined as a staircase prefix", () => {
+  /* 40 spans a full row and part of the next, which is the case a rectangle
+     would get wrong. */
+  setThreshold(40);
+  const required = 40;
   const cells = rasterCells();
 
   /* Each cell must claim exactly the edges that lie on the region's own
@@ -1977,7 +2005,7 @@ check("the outline closes: every region cell has an edge where it must", () => {
   /* A shape whose boundary is drawn per-cell is only closed if no interior
      cell claims an edge and no border cell omits one. Checked by walking the
      region's four neighbours. */
-  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const required = 40;
   const cells = rasterCells();
   const inside = (k) => k >= 0 && k < required;
   for (let k = 0; k < required; k++) {
@@ -1994,9 +2022,9 @@ check("the outline closes: every region cell has an edge where it must", () => {
   }
 });
 
-check("bits that break the requirement are marked, and only those", () => {
+check("bits that break the goal are marked, and only those", () => {
   const digest = hx(shownDigest());
-  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const required = 40;
   const cells = rasterCells();
 
   let expected = 0;
@@ -2007,16 +2035,16 @@ check("bits that break the requirement are marked, and only those", () => {
     if (violates) expected++;
   }
   eq(cellsIn("digest-bit-raster", "violate").length, expected);
-  ok(expected > 0, "an unsearched digest should break a mainnet requirement");
+  ok(expected > 0, "an unsearched digest should break a 40-bit goal");
 });
 
 check("the decisive violation is the most significant one, ringed once", () => {
   const achieved = P.leadingZeroBits(hx(shownDigest()));
-  const required = P.leadingZeroBits(P.targetBytes(0x17034a3f));
+  const required = 40;
   const first = cellsIn("digest-bit-raster", "violate-first");
 
   if (achieved >= required) {
-    eq(first.length, 0, "nothing to decide when the requirement is met");
+    eq(first.length, 0, "nothing to decide when the goal is met");
     return;
   }
   eq(first.length, 1, "exactly one decisive bit");
@@ -2026,29 +2054,29 @@ check("the decisive violation is the most significant one, ringed once", () => {
   ok(/decisive/.test(first[0].title), first[0].title);
 });
 
-check("meeting the requirement leaves no violations at all", () => {
-  /* A target demanding no leading zeros cannot be violated by anything. */
-  setNBits("0x2100ffff");
-  eq(P.leadingZeroBits(P.targetBytes(0x2100ffff)), 0);
-  eq(cellsIn("digest-bit-raster", "violate").length, 0);
-  eq(cellsIn("digest-bit-raster", "rq-top").length, 0,
-    "and nothing to outline either");
-  setNBits("0x17034a3f");
+check("a goal already met leaves no violations at all", () => {
+  const achieved = P.leadingZeroBits(hx(shownDigest()));
+  setThreshold(Math.max(1, achieved));
+  eq(cellsIn("digest-bit-raster", "violate").length, 0,
+    "nothing inside the region can be a 1 when the run covers it");
+  eq(cellsIn("digest-bit-raster", "violate-first").length, 0);
+  setThreshold(16);
 });
 
 check("the raster caption explains all three marks", () => {
   const caption = el("digest-bit-caption").innerHTML;
-  ok(/zeros required/.test(caption), caption);
+  ok(/zeros the goal needs/.test(caption), caption);
   ok(/zeros achieved/.test(caption), caption);
-  ok(/1 where a 0 is required/.test(caption), caption);
+  ok(/1 where the goal needs a 0/.test(caption), caption);
 });
 
-check("exactly one boundary marker, at the end of the required run", () => {
-  setNBits("0x1d00ffff");
+check("exactly one boundary marker, at the end of the goal run", () => {
+  setThreshold(32);
   const marked = cellsIn("digest-bit-raster", "boundary");
   eq(marked.length, 1);
   eq(marked[0].title.match(/^PoW bit (\d+)/)[1], "32",
-    "genesis difficulty requires 32 leading zero bits");
+    "the first bit past the goal");
+  setThreshold(16);
 });
 
 check("a digest of all zeros lights no cells in the raster", () => {
@@ -2347,7 +2375,7 @@ check("the raster caption reports the session's best, and marks it", () => {
 check("the session best is absent before any sampling has happened", () => {
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
   const caption = el("digest-bit-caption").innerHTML;
-  ok(/target needs ≥/.test(caption), "the requirement is always shown");
+  ok(/goal: ≥/.test(caption), "the goal is always shown");
   ok(!/best this search session/.test(caption),
     "but there is no session to report: " + caption);
   eq(cellsIn("digest-bit-raster", "sess-best").length, 0, "and no marker");

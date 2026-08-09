@@ -29,6 +29,7 @@
 
   var M = root.SHATOOL_MODEL;
   var SEARCH = root.SHATOOL_SEARCH;
+  var POW = root.SHATOOL_POW;
   var BYTES_PER_ROW = 4;   // one 32-bit word, matching the schedule words
 
   /**
@@ -53,6 +54,7 @@
     var elSearchEnd = document.getElementById("search-end");
     var elSearchWindowLabel = document.getElementById("search-window-label");
     var elThreshold = document.getElementById("search-threshold");
+    var elThresholdNote = document.getElementById("threshold-note");
     var elRate = document.getElementById("search-rate");
     var elSearchBtn = document.getElementById("btn-search");
     var elSearchReset = document.getElementById("btn-search-reset");
@@ -366,6 +368,8 @@
        * figure beside it is therefore labelled as the random-draw
        * expectation, which is what it is — a yardstick, not a prediction of
        * a scan. */
+      paintThresholdNote(state);
+
       var expected = Math.pow(2, s.threshold);
       var rows = [
         ["points tried", s.attempts.toLocaleString()],
@@ -442,6 +446,27 @@
       if (sec < 5400) return Math.round(sec / 60) + " min";
       if (sec < 172800) return (sec / 3600).toFixed(1) + " hours";
       return (sec / 86400).toFixed(1) + " days";
+    }
+
+    /**
+     * What Bitcoin actually asks for, next to what the player is asking for.
+     *
+     * The goal in the field above is reachable in seconds; the real thing is
+     * not reachable at all on one machine. Stating both together, with the
+     * ratio between them, is the only way the small number stays honest — on
+     * its own it invites the reading that the search is nearly there.
+     */
+    function paintThresholdNote(state) {
+      var needed = POW.leadingZeroBits(POW.targetBytes(state.nBits));
+      var goal = state.search.threshold;
+      var hex = "0x" + state.nBits.toString(16).padStart(8, "0");
+      var gap = needed - goal;
+      var rel = gap > 0 ? "2^" + gap + " × harder than this goal"
+        : gap < 0 ? "2^" + (-gap) + " × easier than this goal"
+        : "exactly this goal";
+      elThresholdNote.textContent = "Bitcoin at " + hex + " needs " + needed +
+        " leading zero bits — " + rel + ". The raster on the right is drawn " +
+        "against the goal, not against that.";
     }
 
     /**

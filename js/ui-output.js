@@ -219,12 +219,14 @@
       var a = state.pow;
       var d = state.analysis.digest;
 
-      /* The requirement is bit-granular and comes from the target, not from
-       * the byte roles: a digest is over target the moment it has fewer
-       * leading zero bits than the target has. That boundary can fall inside
-       * a coefficient byte — for the mainnet example it lands six bits into
-       * byte 22, because the coefficient's top byte is 0x03. */
-      var required = P.leadingZeroBits(a.target);
+      /* The outlined region is the GOAL set in the sampling control, not what
+       * Bitcoin's target demands. Those differ by a factor nobody can cross
+       * on one machine — 16 against 78 for the mainnet default — and drawing
+       * the real one would put the boundary off the picture and leave the
+       * whole raster looking uniformly hopeless. The real requirement is
+       * stated next to the control that sets the goal, with the ratio, so the
+       * small number cannot be mistaken for the real one. */
+      var required = state.search.threshold;
       var achieved = a.leadingZeroBits;
 
       /* The best any point in the current search session reached — sampling
@@ -284,7 +286,7 @@
         cell.title = "PoW bit " + k + " · digest byte " + loc.byteIndex +
           " bit " + loc.bitInByte + " · value " + bit +
           (k < achieved ? " · inside this digest's leading zeros" : "") +
-          (inReq ? " · must be zero at this difficulty" : "") +
+          (inReq ? " · must be zero to reach the goal" : "") +
           (inReq && bit
             ? (k === achieved ? " · VIOLATION, and the decisive one"
                               : " · violates the requirement")
@@ -304,15 +306,15 @@
       }
 
       var pass = achieved >= required;
-      var html = '<div class="rc-row"><span>target needs ≥ ' + required +
+      var html = '<div class="rc-row"><span>goal: ≥ ' + required +
         " leading zero bits</span>" +
         '<span class="n ' + (pass ? "pass" : "fail") + '">this digest has ' +
         achieved + "</span></div>";
 
       html += '<div class="rc-row rc-key">' +
-        '<span class="key-outline"></span>zeros required' +
+        '<span class="key-outline"></span>zeros the goal needs' +
         '<span class="key-fill"></span>zeros achieved' +
-        '<span class="key-bad"></span>1 where a 0 is required' +
+        '<span class="key-bad"></span>1 where the goal needs a 0' +
         "</div>";
 
       if (sessionBest >= 0) {
