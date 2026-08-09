@@ -112,6 +112,49 @@
     return msg;
   }
 
+  /**
+   * Randomize a contiguous run of `width` bits starting at bit `start`.
+   *
+   * This is the search primitive: it plays the part a nonce plays in mining,
+   * varying one window of the input while everything around it is held fixed.
+   *
+   * Whole bytes inside the window are filled a byte at a time and only the
+   * ragged edges are written bit by bit. That matters because the sampler
+   * calls this in tight loops — a bit-at-a-time implementation spends most of
+   * its time in the random source rather than in SHA-256, which is the thing
+   * actually being sampled.
+   *
+   * `rand` returns a float in [0, 1) and defaults to Math.random. This is a
+   * search toy, not a key generator, so the quality of Math.random is not a
+   * concern; being injectable makes the sampler deterministic under test.
+   *
+   * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED
+   * @param {number} start first bit of the window
+   * @param {number} width number of bits
+   * @param {function():number} [rand]
+   */
+  function randomizeRegion(msg, start, width, rand) {
+    var r = rand || Math.random;
+    var lo = Math.max(0, start);
+    var hi = Math.min(msg.nbits, start + width);
+    if (hi <= lo) return msg;
+
+    var firstWhole = Math.ceil(lo / 8);   // first byte fully inside
+    var lastWhole = Math.floor(hi / 8);   // one past the last fully inside
+
+    var i;
+    for (i = lo; i < Math.min(firstWhole * 8, hi); i++) {
+      setBit(msg, i, r() < 0.5 ? 1 : 0);
+    }
+    for (var b = firstWhole; b < lastWhole; b++) {
+      msg.bytes[b] = (r() * 256) | 0;
+    }
+    for (i = Math.max(lo, lastWhole * 8); i < hi; i++) {
+      setBit(msg, i, r() < 0.5 ? 1 : 0);
+    }
+    return clearTrailingBits(msg);
+  }
+
   /** Zero the insignificant low bits of the final byte. */
   function clearTrailingBits(msg) {
     var n = msg.bytes.length;
@@ -405,6 +448,7 @@
     finalByteMask: finalByteMask,
     createMessage: createMessage,
     randomize: randomize,
+    randomizeRegion: randomizeRegion,
     clearTrailingBits: clearTrailingBits,
     getBit: getBit,
     setBit: setBit,

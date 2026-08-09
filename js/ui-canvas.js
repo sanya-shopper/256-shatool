@@ -48,9 +48,20 @@
   var COLS = T_MAX - T_MIN + 1;   // 68
   var BITS = 32;
 
-  /* Band definitions. `rgb` is the "bit is 1" colour; the "bit is 0" colour
-   * is the same hue crushed towards the background, computed once below. */
+  /* Band definitions, in the order the round reads them: the two inputs to a
+   * round on top, the two state tracks below.
+   *
+   * `rgb` is the "bit is 1" colour; the "bit is 0" colour is the same hue
+   * crushed towards the background, computed once below.
+   *
+   * K is included even though it never varies — it is the same 64 constants
+   * for every message and every block. Seeing it is the point: half of what
+   * feeds T1 each round is fixed, and in diff mode the K band stays
+   * completely dark while everything below it lights up, which is a clearer
+   * statement of "K contributes nothing to the difference" than a sentence
+   * would be. */
   var BANDS = [
+    { key: "K", title: "K", rgb: [122, 190, 106], constant: true },
     { key: "W", title: "W", rgb: [216, 162, 74] },
     { key: "A", title: "A", rgb: [70, 198, 216] },
     { key: "E", title: "E", rgb: [157, 127, 240] },
@@ -92,10 +103,126 @@
     var elDiff = document.getElementById("chk-diff");
     var elPin = document.getElementById("btn-set-reference");
 
+    var elChaining = document.getElementById("chaining");
+    var elAnimate = document.getElementById("chk-animate");
+
     var ctx = canvas.getContext("2d");
     var lastState = null;
     var geom = null;      // recomputed on every draw; used for hit testing
     var hover = null;     // {band, t, bit} or null
+
+    // ---------------------------------------------------------------
+    // Change afterglow
+    // ---------------------------------------------------------------
+    //
+    // Every cell carries a decaying value in [0, 1] that is set to 1 the
+    // moment its bit flips and fades to nothing over a few frames. Drawn as a
+    // white overlay, it answers the question the raster alone cannot: not
+    // "what is the state" but "what did that edit just do". Toggling one
+    // input bit lights a handful of cells in W and then a widening wedge
+    // through A and E, which is the avalanche happening rather than the
+    // avalanche summarised.
+    //
+    // Indexing is ((band * COLS) + column) * BITS + row throughout.
+
+    var CELLS = BANDS.length * COLS * BITS;
+    var SLOTS = BANDS.length * COLS;
+    var glow = new Float32Array(CELLS);
+    var prevWords = new Uint32Array(SLOTS);
+    var prevValid = new Uint8Array(SLOTS);
+    var glowActive = false;
+    var rafId = null;
+    var contextKey = null;
+
+    var GLOW_DECAY = 0.80;        // per frame
+    var GLOW_LEVELS = 6;          // quantisation, so alpha is set 6 times not 8704
+    var GLOW_MAX_ALPHA = 0.38;    // deliberately short of white; see below
+
+    /* A viewer who has asked their system for reduced motion gets none. The
+     * raster still updates, it simply does not flash — which also removes the
+     * one case where this could strobe: a fast sampling run changes about
+     * half of every word every frame. GLOW_MAX_ALPHA is capped well short of
+     * opaque for the same reason. */
+    var reduceMotion = false;
+    if (typeof root.matchMedia === "function") {
+      try {
+        reduceMotion = root.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      } catch (e) { reduceMotion = false; }
+    }
+
+    var raf = typeof root.requestAnimationFrame === "function"
+      ? function (fn) { return root.requestAnimationFrame(fn); }
+      : function (fn) { return setTimeout(fn, 16); };
+
+    /**
+     * Compare the incoming frame against the previous one and light whatever
+     * changed. Called once per state change, never from the decay loop.
+     *
+     * A change of *context* — a different block, round limit, message length
+     * or diff mode — repopulates the previous frame without lighting
+     * anything. Otherwise switching blocks would flash the entire canvas,
+     * which says "everything changed" when nothing was edited.
+     */
+    function updateGlow(state) {
+      var key = [state.blockIndex, state.rounds, state.msg.nbits,
+                 state.diffMode ? 1 : 0].join(":");
+      var fresh = key !== contextKey;
+      contextKey = key;
+
+      var animate = state.animate && !reduceMotion;
+      var trace = state.analysis.blocks[state.blockIndex].trace;
+      var lit = false;
+
+      for (var b = 0; b < BANDS.length; b++) {
+        for (var c = 0; c < COLS; c++) {
+          var t = c + T_MIN;
+          var w = state.diffMode
+            ? diffWordAt(state.diff, BANDS[b].key, t)
+            : wordAt(trace, BANDS[b].key, t);
+          var slot = b * COLS + c;
+          var has = w !== undefined;
+          var val = has ? (w >>> 0) : 0;
+
+          if (!fresh && animate && has && prevValid[slot]) {
+            var changed = (prevWords[slot] ^ val) >>> 0;
+            if (changed) {
+              var base = slot * BITS;
+              for (var r = 0; r < BITS; r++) {
+                if ((changed >>> (31 - r)) & 1) { glow[base + r] = 1; lit = true; }
+              }
+            }
+          }
+          prevWords[slot] = val;
+          prevValid[slot] = has ? 1 : 0;
+        }
+      }
+
+      if (fresh || !animate) {
+        glow.fill(0);
+        glowActive = false;
+        return;
+      }
+      if (lit) { glowActive = true; startDecay(); }
+    }
+
+    function startDecay() {
+      if (rafId !== null) return;
+      rafId = raf(function tick() {
+        rafId = null;
+        var any = false;
+        for (var i = 0; i < CELLS; i++) {
+          var v = glow[i];
+          if (v > 0) {
+            v *= GLOW_DECAY;
+            glow[i] = v < 0.02 ? 0 : v;
+            if (glow[i] > 0) any = true;
+          }
+        }
+        glowActive = any;
+        draw();
+        if (any) rafId = raf(tick);
+      });
+    }
 
     // ---------------------------------------------------------------
     // Wiring
@@ -106,6 +233,9 @@
       if (Number.isInteger(n)) cb.onSetRounds(n);
     });
     elDiff.addEventListener("change", function () { cb.onDiff(elDiff.checked); });
+    elAnimate.addEventListener("change", function () {
+      cb.onAnimate(elAnimate.checked);
+    });
     elPin.addEventListener("click", function () { cb.onPinReference(); });
 
     elTabs.addEventListener("click", function (ev) {
@@ -211,6 +341,7 @@
 
     /** The 32-bit word at (band, t), or undefined if not computed. */
     function wordAt(trace, band, t) {
+      if (band === "K") return (t >= 0 && t < 64) ? root.SHAVAR.K[t] : undefined;
       if (band === "W") return (t >= 0 && t < trace.W.length) ? trace.W[t] : undefined;
       return M.track(trace, band, t);
     }
@@ -218,6 +349,9 @@
     /** The same, from a diff mask (which is stored in the trace's layout). */
     function diffWordAt(diff, band, t) {
       if (!diff) return undefined;
+      /* K is a constant of the algorithm, so it is identical between any two
+       * messages: its difference is zero by construction, not by coincidence. */
+      if (band === "K") return (t >= 0 && t < 64) ? 0 : undefined;
       if (band === "W") return (t >= 0 && t < diff.W.length) ? diff.W[t] : undefined;
       var i = 4 + t;
       var arr = diff[band];
@@ -247,11 +381,43 @@
       for (var i = 0; i < BANDS.length; i++) {
         drawBand(g, i, trace, diff, state);
       }
+      drawGlow(g);
       drawSeedRule(g);
       drawSelection(g, state);
       drawHover(g);
       drawAxis(g, state);
       ctx.restore();
+    }
+
+    /**
+     * The afterglow overlay: white, quantised into GLOW_LEVELS alpha steps so
+     * that `globalAlpha` is assigned a handful of times per frame instead of
+     * once per cell. Cells are visited in index order and tested against each
+     * level's band, which costs a few passes over a typed array and no
+     * allocation.
+     */
+    function drawGlow(g) {
+      if (!glowActive) return;
+      ctx.fillStyle = "#ffffff";
+      for (var level = 1; level <= GLOW_LEVELS; level++) {
+        var lo = (level - 1) / GLOW_LEVELS;
+        var hi = level / GLOW_LEVELS;
+        ctx.globalAlpha = (level / GLOW_LEVELS) * GLOW_MAX_ALPHA;
+        for (var b = 0; b < BANDS.length; b++) {
+          var y0 = g.bandY(b);
+          for (var c = 0; c < COLS; c++) {
+            var base = (b * COLS + c) * BITS;
+            var x = g.x0 + c * g.cellW;
+            for (var r = 0; r < BITS; r++) {
+              var v = glow[base + r];
+              if (v > lo && v <= hi) {
+                ctx.fillRect(x, y0 + r * g.cellH, g.cellW + 0.5, g.cellH + 0.5);
+              }
+            }
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
     }
 
     function drawBand(g, bandIndex, trace, diff, state) {
@@ -468,6 +634,52 @@
       elLegend.innerHTML = html;
     }
 
+    /**
+     * The chaining value entering and leaving the selected block.
+     *
+     * These eight words are the only thing one block passes to the next, and
+     * they are already on the canvas without being labelled as such: H[0..3]
+     * are the four seed columns of the A track and H[4..7] are the four seed
+     * columns of E, which is why the strip is tinted with the same two hues
+     * the bands use. Seeding runs in reverse — A[-1] = H[0] down to
+     * A[-4] = H[3] — so each word says which column it became.
+     */
+    function renderChaining(state) {
+      var block = state.analysis.blocks[state.blockIndex];
+      var tr = block.trace;
+
+      function words(arr, kind) {
+        var out = "";
+        for (var i = 0; i < 8; i++) {
+          var track = i < 4 ? "A" : "E";
+          var t = -1 - (i % 4);
+          var title = kind === "in"
+            ? "H[" + i + "] seeds " + track + "[" + t + "]"
+            : "H[" + i + "] leaving this block";
+          out += '<span class="cv-w ' + (i < 4 ? "a" : "e") +
+            '" title="' + title + '">' + hex8(arr[i]) + "</span>";
+        }
+        return out;
+      }
+
+      var origin = state.blockIndex === 0
+        ? "the FIPS initial value"
+        : "block " + (state.blockIndex - 1) + "'s outgoing value";
+      var fate = state.blockIndex === state.analysis.blocks.length - 1
+        ? "the digest"
+        : "block " + (state.blockIndex + 1) + "'s incoming value";
+
+      elChaining.innerHTML =
+        '<div class="cv-row"><span class="cv-label">H in</span>' +
+        '<span class="cv-words">' + words(tr.hIn, "in") + "</span>" +
+        '<span class="cv-note">' + origin + "</span></div>" +
+        '<div class="cv-row"><span class="cv-label">H out</span>' +
+        '<span class="cv-words">' + words(tr.hOut, "out") + "</span>" +
+        '<span class="cv-note">' + fate + "</span></div>" +
+        '<div class="cv-legend">H[0..3] seed the A track at t = −1…−4 · ' +
+        "H[4..7] seed E · H out = H in ⊞ the final window</div>";
+    }
+
     function renderDetail(state) {
       var t = state.selectedRound;
       var trace = state.analysis.blocks[state.blockIndex].trace;
@@ -525,10 +737,13 @@
       }
       elDiff.checked = state.diffMode;
       elDiff.disabled = !state.reference;
+      elAnimate.checked = state.animate;
       elPin.textContent = state.reference ? "Re-pin reference" : "Pin reference";
       renderTabs(state);
       renderLegend(state);
+      renderChaining(state);
       renderDetail(state);
+      updateGlow(state);
       resize();   // sizes the backing store if needed, and always redraws
     }
 

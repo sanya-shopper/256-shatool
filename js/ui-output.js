@@ -1,28 +1,41 @@
 /*
  * shatool/js/ui-output.js — the right-hand digest and proof-of-work panel.
  *
- * Shows the 32-byte digest twice over: as SHA-256 emits it, and as Bitcoin's
- * difficulty check reads it. Every byte is coloured by the part it plays in
- * that check, with the colour bands derived from the decoded nBits rather
- * than hardcoded, so changing the difficulty moves them.
+ * Shows the 32-byte digest three ways over: as SHA-256 emits it, as 32 bytes
+ * ordered by significance, and as all 256 bits in the order the difficulty
+ * check compares them. Every byte is coloured by the part it plays in that
+ * check, with the bands derived from the decoded nBits rather than hardcoded,
+ * so changing the difficulty moves them.
  *
  * All of the arithmetic lives in SHATOOL_POW; this file only draws.
+ *
+ * ------------------------------------------------------------------
+ * Why this panel patches instead of rebuilding
+ * ------------------------------------------------------------------
+ *
+ * The cells animate: a bit that flips fades from its old colour to its new
+ * one, which is what makes a sampling run legible as something happening
+ * rather than as a blur. CSS transitions only fire on an element that
+ * persists across the change, so assigning innerHTML — which destroys every
+ * cell and creates new ones already at their final colour — would silently
+ * disable the animation. The structure is therefore built once and only
+ * classes and text are patched afterwards.
  */
 
 (function (root) {
   "use strict";
 
   var P = root.SHATOOL_POW;
-  var M = root.SHATOOL_MODEL;
 
-  /* The three roles, in the order the panel explains them, with the CSS
-   * custom property each maps to. Kept here so the legend text and the
-   * colouring cannot drift apart. */
+  /* The three roles, in the order the panel explains them. Kept here so the
+   * legend text and the colouring cannot drift apart. */
   var ROLE_TEXT = {
     "must-be-zero": "must be zero at this difficulty",
     "coefficient": "compared against the nBits coefficient",
     "tail": "below the target's precision",
   };
+
+  var hex2 = function (b) { return b.toString(16).padStart(2, "0"); };
 
   function create(cb) {
     var elDigestHex = document.getElementById("digest-hex");
@@ -37,6 +50,15 @@
     var elNote = document.getElementById("pow-note");
     var elRaster = document.getElementById("digest-bit-raster");
     var elRasterCaption = document.getElementById("digest-bit-caption");
+    var elBest = document.getElementById("pow-best");
+
+    /* Persistent cell references, created by the build* functions below. */
+    var hexSpans = null;        // 32, digest in emitted order
+    var targetSpans = null;     // 32, target in emitted order
+    var byteCells = null;       // 32, {root, val, bits[8]}, most significant first
+    var rasterCells = null;     // 256, PoW bit order
+    var noteSpans = null;       // 32, digest in Bitcoin display order
+    var builtBytesWithBits = null;
 
     elShowBits.addEventListener("change", function () {
       cb.onShowDigestBits(elShowBits.checked);
@@ -60,61 +82,86 @@
     }
 
     // ---------------------------------------------------------------
+    // Structure, built once
+    // ---------------------------------------------------------------
 
-    /**
-     * The digest as a run of hex byte spans, each carrying its role class.
-     *
-     * @param {Uint8Array} bytes
-     * @param {Array} roles from SHATOOL_POW.byteRoles
-     * @param {boolean} reversed render in Bitcoin display order
-     * @param {number} deciding digest index that settled the comparison, or -1
-     */
-    function hexSpans(bytes, roles, reversed, deciding) {
-      var out = "";
+    /** A row of 32 hex-byte spans inside `container`, in the given order. */
+    function buildHexRow(container, reversed) {
+      var spans = new Array(32);
+      container.textContent = "";
       for (var k = 0; k < 32; k++) {
         var i = reversed ? 31 - k : k;
-        var cls = "dh-byte " + roles[i].role;
-        if (bytes[i] === 0) cls += " is-zero";
-        if (i === deciding) cls += " deciding";
-        out += '<span class="' + cls + '" title="' +
-          "digest byte " + i + " · weight 256^" + i + " · " +
-          ROLE_TEXT[roles[i].role] + '">' +
-          bytes[i].toString(16).padStart(2, "0") + "</span>";
+        var s = document.createElement("span");
+        s.className = "dh-byte";
+        container.appendChild(s);
+        spans[i] = s;
       }
-      return out;
+      return spans;
     }
 
-    function renderDigest(state) {
-      var a = state.pow;
-      var d = state.analysis.digest;
-
-      elDigestHex.innerHTML = hexSpans(d, a.roles, false, a.decidingIndex);
-
-      /* One cell per byte, most significant first, because the panel is
-       * explaining significance and reading order should follow it. */
-      var html = "";
+    function buildByteCells(showBits) {
+      var cells = new Array(32);
+      elDigestBytes.textContent = "";
+      /* Most significant first: the panel is explaining significance, so
+       * reading order should follow it. */
       for (var k = 0; k < 32; k++) {
         var i = 31 - k;
-        var role = a.roles[i].role;
-        var cls = "db-cell " + role + (d[i] === 0 ? " is-zero" : "");
-        html += '<div class="' + cls + '" title="digest byte ' + i +
-          " · weight 256^" + i + " · " + ROLE_TEXT[role] + '">';
-        html += '<div class="db-top"><span class="db-idx">' + i +
-          '</span><span class="db-val">' +
-          d[i].toString(16).padStart(2, "0") + "</span></div>";
-        if (state.showDigestBits) {
-          html += '<div class="db-bits">';
+        var cell = document.createElement("div");
+        cell.className = "db-cell";
+
+        var top = document.createElement("div");
+        top.className = "db-top";
+        var idx = document.createElement("span");
+        idx.className = "db-idx";
+        idx.textContent = String(i);
+        var val = document.createElement("span");
+        val.className = "db-val";
+        top.appendChild(idx);
+        top.appendChild(val);
+        cell.appendChild(top);
+
+        var bits = null;
+        if (showBits) {
+          bits = new Array(8);
+          var row = document.createElement("div");
+          row.className = "db-bits";
           for (var p = 7; p >= 0; p--) {
-            html += '<span class="db-bit' +
-              (((d[i] >> p) & 1) ? " on" : "") + '"></span>';
+            var bcell = document.createElement("span");
+            bcell.className = "db-bit";
+            row.appendChild(bcell);
+            bits[p] = bcell;
           }
-          html += "</div>";
+          cell.appendChild(row);
         }
-        html += "</div>";
+
+        elDigestBytes.appendChild(cell);
+        cells[i] = { root: cell, val: val, bits: bits };
       }
-      elDigestBytes.innerHTML = html;
-      elShowBits.checked = state.showDigestBits;
+      builtBytesWithBits = showBits;
+      return cells;
     }
+
+    function buildRaster() {
+      var cells = new Array(256);
+      elRaster.textContent = "";
+      for (var k = 0; k < 256; k++) {
+        if (k % 32 === 0) {
+          var lab = document.createElement("div");
+          lab.className = "br-label";
+          lab.textContent = String(k);
+          elRaster.appendChild(lab);
+        }
+        var c = document.createElement("div");
+        c.className = "br-bit";
+        elRaster.appendChild(c);
+        cells[k] = c;
+      }
+      return cells;
+    }
+
+    // ---------------------------------------------------------------
+    // Ordering
+    // ---------------------------------------------------------------
 
     /**
      * Where bit `k` of the proof-of-work value lives in the digest.
@@ -122,11 +169,49 @@
      * k = 0 is the most significant bit of the whole 256-bit value, which is
      * bit 7 of digest[31] — the top bit of the LAST byte SHA-256 emits.
      * k = 255 is the least significant, bit 0 of digest[0].
-     *
-     * @returns {{byteIndex: number, bitInByte: number}}
      */
     function powBitLocation(k) {
       return { byteIndex: 31 - (k >> 3), bitInByte: 7 - (k & 7) };
+    }
+
+    // ---------------------------------------------------------------
+    // Paint
+    // ---------------------------------------------------------------
+
+    function paintHexRow(spans, bytes, roles, deciding) {
+      for (var i = 0; i < 32; i++) {
+        var s = spans[i];
+        var cls = "dh-byte " + roles[i].role;
+        if (bytes[i] === 0) cls += " is-zero";
+        if (i === deciding) cls += " deciding";
+        if (s.className !== cls) s.className = cls;
+        var text = hex2(bytes[i]);
+        if (s.textContent !== text) s.textContent = text;
+        s.title = "digest byte " + i + " · weight 256^" + i + " · " +
+          ROLE_TEXT[roles[i].role];
+      }
+    }
+
+    function paintByteCells(state) {
+      var a = state.pow;
+      var d = state.analysis.digest;
+      for (var i = 0; i < 32; i++) {
+        var c = byteCells[i];
+        var role = a.roles[i].role;
+        var cls = "db-cell " + role + (d[i] === 0 ? " is-zero" : "");
+        if (c.root.className !== cls) c.root.className = cls;
+        c.root.title = "digest byte " + i + " · weight 256^" + i + " · " +
+          ROLE_TEXT[role];
+        var text = hex2(d[i]);
+        if (c.val.textContent !== text) c.val.textContent = text;
+        if (c.bits) {
+          for (var p = 0; p < 8; p++) {
+            var on = ((d[i] >> p) & 1) === 1;
+            var bc = "db-bit" + (on ? " on" : "");
+            if (c.bits[p].className !== bc) c.bits[p].className = bc;
+          }
+        }
+      }
     }
 
     /**
@@ -135,42 +220,34 @@
      * Thirty-two bits per row, so a row is four digest bytes and the grid
      * lines up with the byte panel above it. The run of bits the target
      * requires to be zero is shaded darker and terminated by a marker, which
-     * turns the difficulty check into something you can read off the shape:
-     * the black block has to reach the marker.
+     * turns the difficulty check into something readable off the shape: the
+     * black block has to reach the marker.
      */
-    function renderBitRaster(state) {
+    function paintRaster(state) {
       var a = state.pow;
       var d = state.analysis.digest;
 
-      /* The requirement is bit-granular, and it comes from the target rather
-       * than from the byte roles: a digest is over target the moment it has
-       * fewer leading zero bits than the target has. That boundary can fall
-       * inside a coefficient byte — for the mainnet example it lands six bits
-       * into byte 22, because the coefficient's top byte is 0x03. */
+      /* The requirement is bit-granular and comes from the target, not from
+       * the byte roles: a digest is over target the moment it has fewer
+       * leading zero bits than the target has. That boundary can fall inside
+       * a coefficient byte — for the mainnet example it lands six bits into
+       * byte 22, because the coefficient's top byte is 0x03. */
       var required = P.leadingZeroBits(a.target);
       var achieved = a.leadingZeroBits;
 
-      var html = "";
       for (var k = 0; k < 256; k++) {
-        if (k % 32 === 0) {
-          html += '<div class="br-label">' + k + "</div>";
-        }
         var loc = powBitLocation(k);
         var bit = (d[loc.byteIndex] >> loc.bitInByte) & 1;
-        var role = a.roles[loc.byteIndex].role;
-
-        var cls = "br-bit " + role;
+        var cls = "br-bit " + a.roles[loc.byteIndex].role;
         if (bit) cls += " on";
         if (k < required) cls += " req";
         if (k === required) cls += " boundary";
-
-        html += '<div class="' + cls + '" title="PoW bit ' + k +
-          " · digest byte " + loc.byteIndex + " bit " + loc.bitInByte +
-          " · value " + bit +
-          (k < required ? " · must be zero at this difficulty" : "") +
-          '"></div>';
+        var cell = rasterCells[k];
+        if (cell.className !== cls) cell.className = cls;
+        cell.title = "PoW bit " + k + " · digest byte " + loc.byteIndex +
+          " bit " + loc.bitInByte + " · value " + bit +
+          (k < required ? " · must be zero at this difficulty" : "");
       }
-      elRaster.innerHTML = html;
 
       var pass = achieved >= required;
       elRasterCaption.innerHTML =
@@ -179,7 +256,7 @@
         achieved + "</span>";
     }
 
-    function renderPow(state) {
+    function paintPow(state) {
       var a = state.pow;
       var dec = a.decoded;
 
@@ -201,10 +278,8 @@
       } else {
         elVerdict.innerHTML = "&gt; target — would be rejected" +
           '<span class="why">settled at byte ' + a.decidingIndex +
-          ": digest 0x" + state.analysis.digest[a.decidingIndex].toString(16)
-            .padStart(2, "0") +
-          " exceeds target 0x" + a.target[a.decidingIndex].toString(16)
-            .padStart(2, "0") + "</span>";
+          ": digest 0x" + hex2(state.analysis.digest[a.decidingIndex]) +
+          " exceeds target 0x" + hex2(a.target[a.decidingIndex]) + "</span>";
       }
 
       var rows = [
@@ -234,25 +309,70 @@
         "bytes 0–" + Math.max(0, dec.exponent - 4) +
         "</span><span class=\"n\">" + ROLE_TEXT["tail"] + "</span></div>";
       elStats.innerHTML = html;
+    }
 
-      elTarget.innerHTML = hexSpans(a.target, a.roles, false, -1);
+    /**
+     * The hardest difficulty this digest would have satisfied.
+     *
+     * The panel above answers "does it clear the difficulty you picked". This
+     * answers the question that does not need a difficulty picked at all:
+     * since the check is `value <= target`, the smallest target a digest
+     * satisfies is its own value, and every easier difficulty is cleared too.
+     * Reported in Bitcoin's usual units, where 1 is the genesis block's
+     * difficulty — so a random digest lands far below 1, and watching this
+     * number climb is what a sampling run is actually doing.
+     */
+    function paintBest(state) {
+      var h = P.hardestCleared(state.analysis.digest);
+      if (h.zero) {
+        elBest.innerHTML = '<div class="bd-main">every difficulty</div>' +
+          '<div class="bd-note">an all-zero digest is under every target</div>';
+        return;
+      }
 
-      elNote.innerHTML =
-        "<p><strong>Reading order.</strong> Bitcoin treats these 32 bytes as a " +
-        "<em>little-endian</em> 256-bit integer, so byte 31 — the last one " +
-        "SHA-256 emits — is the most significant, and byte 0 is the least. " +
-        "The conventional block-hash string is this digest written backwards, " +
-        "which is why its zeros appear at the front.</p>" +
-        "<p>In Bitcoin display order that string is:</p>" +
-        '<p class="digest-hex" style="letter-spacing:0.02em">' +
-        hexSpans(state.analysis.digest, a.roles, true, a.decidingIndex) +
-        "</p>" +
-        "<p><strong>What this is not.</strong> Bitcoin hashes an 80-byte block " +
-        "header with SHA-256 applied <em>twice</em>. shatool applies it once to " +
-        "an arbitrary message, so the digest above is not a block hash and the " +
-        "verdict is not a claim about mining. What is exactly true is the part " +
-        "shown: given any 32 bytes, this is the weight each byte carries in the " +
-        "difficulty comparison and this is how the comparison comes out.</p>";
+      /* Below about 1e-4 the fixed-point form is all zeros and says nothing,
+       * so switch to the exponent that does. */
+      var d = h.difficulty;
+      var pretty = d >= 1e-4
+        ? (d >= 1000 ? d.toExponential(3) : d.toPrecision(4))
+        : d.toExponential(3);
+
+      var rows = [
+        ["as nBits", "0x" + h.nBits.toString(16).padStart(8, "0")],
+        ["leading zero bits", String(h.leadingZeroBits)],
+        ["expected samples", "2^" + h.log2ExpectedAttempts.toFixed(1)],
+        ["vs genesis (difficulty 1)",
+          h.log2Difficulty >= 0
+            ? "2^" + h.log2Difficulty.toFixed(1) + " × harder"
+            : "2^" + (-h.log2Difficulty).toFixed(1) + " × easier"],
+      ];
+      var html = '<div class="bd-main">difficulty ' + pretty + "</div>";
+      html += '<div class="summary" style="margin-top:6px;border:0;padding:0">';
+      for (var i = 0; i < rows.length; i++) {
+        html += '<div class="row"><span>' + rows[i][0] +
+          '</span><span class="n">' + rows[i][1] + "</span></div>";
+      }
+      html += "</div>";
+      html += '<div class="bd-note">the smallest target this digest still ' +
+        "satisfies is its own value, so this is the hardest difficulty it " +
+        "would have cleared</div>";
+      elBest.innerHTML = html;
+    }
+
+    /**
+     * The digest in Bitcoin display order, inside the explanatory note.
+     *
+     * The prose around it lives in index.html, not here — it is content, not
+     * behaviour, and a renderer that carries three paragraphs of English is a
+     * renderer nobody edits the English in. This only fills the one element
+     * that actually changes.
+     */
+    function paintNote(state) {
+      if (!noteSpans) {
+        noteSpans = buildHexRow(document.getElementById("note-display"), true);
+      }
+      paintHexRow(noteSpans, state.analysis.digest, state.pow.roles,
+        state.pow.decidingIndex);
     }
 
     function swatch(varName) {
@@ -265,12 +385,11 @@
      * The probability a uniform 256-bit value is <= target is
      * (target + 1) / 2^256, so the expected count is its reciprocal. Computed
      * from the exponent and coefficient in floating point, which is plenty
-     * for a figure that is only ever displayed to one decimal place.
+     * for a figure only ever displayed to one decimal place.
      */
     function expectedWork(a) {
       var dec = a.decoded;
       if (dec.negative || dec.overflow || dec.coefficient === 0) return "—";
-      /* log2(target) = log2(coefficient) + 8 * (exponent - 3) */
       var log2Target = Math.log2(dec.coefficient) + 8 * (dec.exponent - 3);
       var log2Tries = 256 - log2Target;
       if (log2Tries < 0) return "1 (target exceeds the range)";
@@ -287,6 +406,7 @@
       for (var i = 0; i < elSelect.options.length; i++) {
         if (elSelect.options[i].value.toLowerCase() === asHex) {
           elSelect.selectedIndex = i;
+          elSelect.value = elSelect.options[i].value;
           matched = true;
           break;
         }
@@ -299,9 +419,22 @@
         elCustomRow.hidden = true;
       }
 
-      renderDigest(state);
-      renderBitRaster(state);
-      renderPow(state);
+      if (!hexSpans) hexSpans = buildHexRow(elDigestHex, false);
+      if (!targetSpans) targetSpans = buildHexRow(elTarget, false);
+      if (!rasterCells) rasterCells = buildRaster();
+      if (!byteCells || builtBytesWithBits !== state.showDigestBits) {
+        byteCells = buildByteCells(state.showDigestBits);
+      }
+      elShowBits.checked = state.showDigestBits;
+
+      paintHexRow(hexSpans, state.analysis.digest, state.pow.roles,
+        state.pow.decidingIndex);
+      paintHexRow(targetSpans, state.pow.target, state.pow.roles, -1);
+      paintByteCells(state);
+      paintRaster(state);
+      paintPow(state);
+      paintNote(state);
+      paintBest(state);
     }
 
     return { render: render };

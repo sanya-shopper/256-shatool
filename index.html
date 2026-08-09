@@ -25,7 +25,7 @@
 <main id="layout">
 
   <!-- ============================ INPUT ============================ -->
-  <section id="panel-input" class="panel">
+  <section class="panel">
     <h2>Input</h2>
 
     <div class="control-row">
@@ -56,6 +56,46 @@
 
     <div id="hex-grid" class="hex-grid"></div>
 
+    <h3>Sample</h3>
+
+    <p class="hint-text">Randomly resample one contiguous range of the message,
+      holding every other bit fixed, until the digest shows enough leading
+      zeros in proof-of-work order.</p>
+
+    <div class="control-row">
+      <label for="search-start">Bits</label>
+      <input type="number" id="search-start" min="0" step="1" value="449">
+      <span class="unit">to</span>
+      <input type="number" id="search-end" min="0" step="1" value="512">
+      <span class="unit" id="search-window-label">64 bits</span>
+    </div>
+
+    <div class="control-row">
+      <label for="search-threshold">Stop at</label>
+      <input type="number" id="search-threshold" min="1" max="64" step="1" value="16">
+      <span class="unit">leading zero bits</span>
+    </div>
+
+    <div class="control-row">
+      <label for="search-rate">Per frame</label>
+      <input type="number" id="search-rate" min="1" max="200000" step="1" value="500">
+      <span class="unit">samples</span>
+    </div>
+
+    <div class="control-row">
+      <button type="button" id="btn-search">Start sampling</button>
+      <button type="button" id="btn-search-reset">Reset</button>
+    </div>
+
+    <div id="search-stats" class="summary"></div>
+
+    <div class="control-row" style="margin-top:10px">
+      <button type="button" id="btn-best-flip"
+              title="Flip each input bit in turn and keep whichever one lowers the digest value most">Best single flip</button>
+    </div>
+
+    <div id="flip-result" class="summary"></div>
+
     <div id="padding-summary" class="summary"></div>
   </section>
 
@@ -73,6 +113,10 @@
           <input type="checkbox" id="chk-diff">
           <span>Diff vs reference</span>
         </label>
+        <label class="checkline" title="Flash cells whose bit just changed">
+          <input type="checkbox" id="chk-animate" checked>
+          <span>Animate</span>
+        </label>
         <button type="button" id="btn-set-reference"
                 title="Pin the current message as the baseline for diff mode">Pin reference</button>
       </div>
@@ -84,11 +128,12 @@
     </div>
 
     <div id="canvas-legend" class="legend"></div>
+    <div id="chaining" class="chaining"></div>
     <div id="round-detail" class="round-detail"></div>
   </section>
 
   <!-- ============================ OUTPUT =========================== -->
-  <section id="panel-output" class="panel">
+  <section class="panel">
     <h2>Output</h2>
 
     <div class="field">
@@ -137,7 +182,24 @@
       <div id="pow-target" class="digest-hex target"></div>
     </div>
 
-    <div id="pow-note" class="note"></div>
+    <div id="pow-note" class="note">
+      <p><strong>Reading order.</strong> Bitcoin treats these 32 bytes as a
+        <em>little-endian</em> 256-bit integer, so byte 31 — the last one
+        SHA-256 emits — is the most significant, and byte 0 is the least. The
+        conventional block-hash string is this digest written backwards, which
+        is why its zeros appear at the front.</p>
+      <p>In Bitcoin display order that string is:</p>
+      <p class="digest-hex note-display" id="note-display"></p>
+      <p><strong>What this is not.</strong> Bitcoin hashes an 80-byte block
+        header with SHA-256 applied <em>twice</em>. shatool applies it once to
+        an arbitrary message, so the digest above is not a block hash and the
+        verdict is not a claim about mining. What is exactly true is the part
+        shown: given any 32 bytes, this is the weight each byte carries in the
+        difficulty comparison and this is how the comparison comes out.</p>
+    </div>
+
+    <h3>Hardest difficulty cleared</h3>
+    <div id="pow-best" class="best-difficulty"></div>
   </section>
 
 </main>
@@ -145,6 +207,7 @@
 <script src="js/vendor/shavar.js"></script>
 <script src="js/model.js"></script>
 <script src="js/pow.js"></script>
+<script src="js/search.js"></script>
 <script src="js/ui-input.js"></script>
 <script src="js/ui-canvas.js"></script>
 <script src="js/ui-output.js"></script>

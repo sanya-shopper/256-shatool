@@ -18,6 +18,7 @@
 
   var M = root.SHATOOL_MODEL;
   var P = root.SHATOOL_POW;
+  var Q = root.SHATOOL_SEARCH;
 
   // -------------------------------------------------------------------
   // State
@@ -42,7 +43,34 @@
     showInputBits: true,
     showDigestBits: false,
     diffMode: false,
+    animate: true,
     nBits: P.EXAMPLE_NBITS,
+
+    /**
+     * Sampling run.
+     *
+     * `range` is what the user asked for, inclusive, and is never modified by
+     * anything except the user. `window` is that range clamped to the current
+     * message, recomputed on every refresh. Keeping the two apart is what
+     * lets a range survive a resize: shrinking the message to 64 bits and
+     * growing it back restores the original range instead of leaving it
+     * collapsed to the single bit the short message could hold.
+     */
+    search: {
+      running: false,
+      range: { start: 0, end: Q.WINDOW_BITS - 1 },
+      window: { start: 0, width: Q.WINDOW_BITS },
+      threshold: 16,
+      rate: 500,          // samples per animation frame
+      attempts: 0,
+      best: -1,
+      found: false,
+      startedAt: 0,
+      rate2: 0,           // measured samples per second
+    },
+
+    /** Result of the last "best single flip" scan, or null. */
+    flip: null,
 
     error: null,
   };
@@ -64,6 +92,11 @@
   function refresh() {
     state.analysis = M.analyze(state.msg, { rounds: state.rounds });
     state.pow = P.analyze(state.analysis.digest, state.nBits);
+
+    /* Derived from the requested range every time, so a message that grows
+     * or shrinks moves the window without destroying what was asked for. */
+    state.search.window = Q.windowFromRange(state.msg.nbits,
+      state.search.range.start, state.search.range.end);
 
     if (state.blockIndex >= state.analysis.blocks.length) {
       state.blockIndex = state.analysis.blocks.length - 1;
@@ -135,6 +168,8 @@
       guarded(function () { M.setMessageHex(state.msg, text); });
     },
     onSetNbits: function (n) {
+      /* No window bookkeeping here: refresh() re-derives it from the
+       * requested range against whatever the new length turns out to be. */
       guarded(function () { M.resize(state.msg, n); });
     },
     onRandomize: function () {
@@ -171,6 +206,10 @@
       state.diffMode = v;
       render();
     },
+    onAnimate: function (v) {
+      state.animate = v;
+      render();
+    },
     onPinReference: function () {
       /* Pinning takes a snapshot of the message as it is now. Toggling a bit
        * afterwards is then visible in diff mode as the avalanche from that
@@ -194,6 +233,130 @@
   };
 
   // -------------------------------------------------------------------
+  // Sampling
+  // -------------------------------------------------------------------
+  //
+  // A run draws `rate` samples per animation frame and renders after each
+  // frame rather than after each sample. That is what makes it watchable: the
+  // sampling itself is far faster than a display can show, so the frame is
+  // the natural unit, and every frame that is drawn is a real point that was
+  // really sampled — not an interpolation between them.
+
+  var rafId = null;
+  var raf = typeof root.requestAnimationFrame === "function"
+    ? function (fn) { return root.requestAnimationFrame(fn); }
+    : function (fn) { return setTimeout(fn, 16); };
+  var caf = typeof root.cancelAnimationFrame === "function"
+    ? function (id) { root.cancelAnimationFrame(id); }
+    : function (id) { clearTimeout(id); };
+
+  var now = (typeof root.performance === "object" && root.performance &&
+             typeof root.performance.now === "function")
+    ? function () { return root.performance.now(); }
+    : function () { return new Date().getTime(); };
+
+  /** One frame of sampling. Exposed for tests, which pump frames by hand. */
+  function searchFrame() {
+    rafId = null;
+    var s = state.search;
+    if (!s.running) return;
+
+    var res = Q.run(state.msg, s.window, {
+      samples: s.rate,
+      thresholdBits: s.threshold,
+    });
+
+    s.attempts += res.attempts;
+    if (res.bestBits > s.best) s.best = res.bestBits;
+
+    var elapsed = (now() - s.startedAt) / 1000;
+    s.rate2 = elapsed > 0 ? Math.round(s.attempts / elapsed) : 0;
+
+    if (res.found) {
+      s.running = false;
+      s.found = true;
+    }
+
+    /* The message was mutated in place by the sampler, so a full refresh is
+     * both correct and necessary — the traces on the canvas belong to the
+     * point now on screen. */
+    refresh();
+
+    if (s.running) rafId = raf(searchFrame);
+  }
+
+  function startSearch() {
+    var s = state.search;
+    if (s.running) return;
+    if (state.msg.nbits === 0) return;
+    s.running = true;
+    s.found = false;
+    /* Restart the clock but keep the counters: a pause and resume is one run
+     * as far as the attempt total is concerned, and resetting is a separate
+     * button. */
+    s.startedAt = now() - (s.rate2 > 0 ? (s.attempts / s.rate2) * 1000 : 0);
+    render();
+    rafId = raf(searchFrame);
+  }
+
+  function stopSearch() {
+    state.search.running = false;
+    if (rafId !== null) { caf(rafId); rafId = null; }
+    render();
+  }
+
+  var searchCallbacks = {
+    onSetSearchRange: function (start, end) {
+      if (!Number.isInteger(start) || !Number.isInteger(end)) return;
+      state.search.range = { start: start, end: end };
+      refresh();
+    },
+    onSetThreshold: function (n) {
+      if (!Number.isInteger(n) || n < 1 || n > 256) return;
+      state.search.threshold = n;
+      state.search.found = false;
+      render();
+    },
+    onSetRate: function (n) {
+      if (!Number.isInteger(n) || n < 1) return;
+      state.search.rate = n;
+      render();
+    },
+    onToggleSearch: function () {
+      if (state.search.running) stopSearch(); else startSearch();
+    },
+    onResetSearch: function () {
+      stopSearch();
+      var s = state.search;
+      s.attempts = 0;
+      s.best = -1;
+      s.found = false;
+      s.rate2 = 0;
+      state.flip = null;
+      render();
+    },
+    onBestFlip: function () {
+      /* Synchronous: one hash per input bit, which for any message this tool
+       * will hold is a few hundred hashes and finishes well inside a frame.
+       * The change it makes is animated by the canvas afterglow like any
+       * other edit, so the result is visible without the scan being staged. */
+      stopSearch();
+      var before = P.leadingZeroBits(state.analysis.digest);
+      var res = Q.bestSingleFlip(state.msg);
+      if (!res) { state.flip = null; refresh(); return; }
+      state.flip = {
+        index: res.index,
+        tested: res.tested,
+        improved: res.improved,
+        log2Delta: res.log2Delta,
+        zerosBefore: before,
+        zerosAfter: P.leadingZeroBits(res.after),
+      };
+      refresh();
+    },
+  };
+
+  // -------------------------------------------------------------------
   // Start
   // -------------------------------------------------------------------
 
@@ -202,7 +365,18 @@
      * fit its own padding in a single block. See model.js for why. */
     state.msg = M.randomize(M.createMessage(M.DEFAULT_NBITS));
 
-    ui.input = root.SHATOOL_UI_INPUT.create(inputCallbacks);
+    var w0 = Q.defaultWindow(state.msg.nbits, Q.WINDOW_BITS);
+    state.search.range = { start: w0.start, end: Q.windowEnd(w0) };
+
+    /* ui-input owns the sampling controls as well as the message editor,
+     * because both of them change the input. The two callback sets are merged
+     * rather than passed separately so that module keeps one collaborator. */
+    var inputAll = {};
+    var k;
+    for (k in inputCallbacks) inputAll[k] = inputCallbacks[k];
+    for (k in searchCallbacks) inputAll[k] = searchCallbacks[k];
+
+    ui.input = root.SHATOOL_UI_INPUT.create(inputAll);
     ui.canvas = root.SHATOOL_UI_CANVAS.create(canvasCallbacks);
     ui.output = root.SHATOOL_UI_OUTPUT.create(outputCallbacks);
 

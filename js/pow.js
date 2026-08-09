@@ -170,6 +170,39 @@
   }
 
   /**
+   * Compare two 32-byte little-endian values.
+   * @returns {number} -1 if a < b, 0 if equal, 1 if a > b
+   */
+  function compareValues(a, b) {
+    for (var i = 31; i >= 0; i--) {
+      if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Exact 256-bit subtraction, a - b, in little-endian byte layout.
+   *
+   * Used to size the gap between two digests without reaching for BigInt or
+   * losing precision in a double. Schoolbook borrow propagation over 32
+   * bytes; the caller is expected to have established a >= b, and a smaller
+   * `a` wraps modulo 2^256 rather than reporting an error, which is why
+   * `borrow` comes back too.
+   *
+   * @returns {{diff: Uint8Array, borrow: number}}
+   */
+  function sub256(a, b) {
+    var out = new Uint8Array(32);
+    var borrow = 0;
+    for (var i = 0; i < 32; i++) {
+      var v = a[i] - b[i] - borrow;
+      if (v < 0) { v += 256; borrow = 1; } else { borrow = 0; }
+      out[i] = v;
+    }
+    return { diff: out, borrow: borrow };
+  }
+
+  /**
    * How many leading zero bits the digest has *as Bitcoin reads it* — that
    * is, scanning from byte 31 downward, most significant bit first.
    *
@@ -277,16 +310,141 @@
     return n;
   }
 
+  // -------------------------------------------------------------------
+  // 4. The hardest difficulty a given digest clears
+  // -------------------------------------------------------------------
+  //
+  // Turning the question around: instead of asking whether a digest is under
+  // some target, ask what the smallest target is that it still satisfies.
+  // Since the check is `value <= target`, that target is the digest's own
+  // value, and every difficulty at or below the corresponding one is cleared
+  // too. This is the honest measure of "how good was this hash".
+
+  /** Bitcoin's difficulty-1 target, 0xffff * 256^26, as a base-2 logarithm. */
+  var LOG2_DIFF1 = Math.log2(0xffff) + 8 * 26;
+
+  /** Index of the most significant nonzero byte, or -1 for an all-zero value. */
+  function topByteIndex(bytes) {
+    for (var i = 31; i >= 0; i--) if (bytes[i] !== 0) return i;
+    return -1;
+  }
+
+  /**
+   * log2 of a 32-byte little-endian value.
+   *
+   * Built from the top four bytes only. A double carries 53 bits of mantissa,
+   * so four bytes is already more precision than the result is displayed
+   * with, and taking the whole 256-bit value would need arbitrary precision
+   * for no visible gain.
+   */
+  function log2Value(bytes) {
+    var m = topByteIndex(bytes);
+    if (m < 0) return -Infinity;
+    var mantissa = bytes[m];
+    if (m >= 1) mantissa += bytes[m - 1] / 256;
+    if (m >= 2) mantissa += bytes[m - 2] / 65536;
+    if (m >= 3) mantissa += bytes[m - 3] / 16777216;
+    return Math.log2(mantissa) + 8 * m;
+  }
+
+  /**
+   * Encode a 32-byte value as compact nBits, rounding UP.
+   *
+   * Rounding up matters. The compact form keeps only three significant bytes,
+   * so truncating would produce a target *below* the digest — an nBits the
+   * digest does not actually satisfy, which is exactly the confidently-wrong
+   * output this project exists not to produce. When any discarded byte is
+   * nonzero the coefficient is incremented instead, and the carry out of
+   * 0xffffff is handled by stepping the exponent.
+   *
+   * @returns {number} compact nBits whose target is >= the input value
+   */
+  function encodeCompactCeil(bytes) {
+    var m = topByteIndex(bytes);
+    if (m < 0) return 0;
+
+    var exponent = m + 1;
+    var c2 = bytes[m];
+    var c1 = m >= 1 ? bytes[m - 1] : 0;
+    var c0 = m >= 2 ? bytes[m - 2] : 0;
+
+    /* Was anything below the three retained bytes discarded? */
+    var lost = false;
+    for (var i = m - 3; i >= 0; i--) if (bytes[i] !== 0) { lost = true; break; }
+
+    var coefficient = (c2 << 16) | (c1 << 8) | c0;
+
+    /* Bit 23 of the coefficient is a sign bit in Bitcoin's encoding, so a
+     * top byte of 0x80 or more has to shift down one byte and step the
+     * exponent. The byte that drops off is then itself a rounding loss. */
+    if (coefficient & 0x800000) {
+      if ((coefficient & 0xff) !== 0) lost = true;
+      coefficient >>>= 8;
+      exponent += 1;
+    }
+
+    if (lost) {
+      coefficient += 1;
+      if (coefficient > 0xffffff) { coefficient >>>= 8; exponent += 1; }
+      /* The increment can itself push into the sign bit. */
+      if (coefficient & 0x800000) { coefficient >>>= 8; exponent += 1; }
+    }
+
+    return (((exponent & 0xff) << 24) | (coefficient & 0x7fffff)) >>> 0;
+  }
+
+  /**
+   * The hardest difficulty this digest would satisfy.
+   *
+   * @returns {{zero: boolean, log2Value: number, log2Difficulty: number,
+   *            difficulty: number, nBits: number,
+   *            log2ExpectedAttempts: number, leadingZeroBits: number}}
+   *   `difficulty` is in Bitcoin's usual units — difficulty-1's target
+   *   divided by this one — so 1 means "as hard as the genesis block" and a
+   *   value below 1 means easier than that. A random single digest is
+   *   overwhelmingly likely to land far below 1.
+   */
+  function hardestCleared(digest) {
+    var m = topByteIndex(digest);
+    if (m < 0) {
+      /* An all-zero digest satisfies every possible target. Unreachable in
+       * practice, and reported rather than divided by. */
+      return {
+        zero: true, log2Value: -Infinity, log2Difficulty: Infinity,
+        difficulty: Infinity, nBits: 0,
+        log2ExpectedAttempts: 256, leadingZeroBits: 256,
+      };
+    }
+    var lv = log2Value(digest);
+    var log2Difficulty = LOG2_DIFF1 - lv;
+    return {
+      zero: false,
+      log2Value: lv,
+      log2Difficulty: log2Difficulty,
+      difficulty: Math.pow(2, log2Difficulty),
+      nBits: encodeCompactCeil(digest),
+      /* Expected samples to land at or under this value: 2^256 / value. */
+      log2ExpectedAttempts: 256 - lv,
+      leadingZeroBits: leadingZeroBits(digest),
+    };
+  }
+
   root.SHATOOL_POW = Object.freeze({
     EXAMPLE_NBITS: EXAMPLE_NBITS,
     GENESIS_NBITS: GENESIS_NBITS,
     decodeNBits: decodeNBits,
     targetBytes: targetBytes,
     compareToTarget: compareToTarget,
+    compareValues: compareValues,
+    sub256: sub256,
     leadingZeroBits: leadingZeroBits,
     countLeadingZeroBytes: countLeadingZeroBytes,
     displayHex: displayHex,
     byteRoles: byteRoles,
     analyze: analyze,
+    topByteIndex: topByteIndex,
+    log2Value: log2Value,
+    encodeCompactCeil: encodeCompactCeil,
+    hardestCleared: hardestCleared,
   });
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -185,6 +185,31 @@ function findAll(el, pred, out) {
 // ---------------------------------------------------------------------
 
 let doc = null;
+const frameQueue = [];
+let nextFrameId = 1;
+
+/**
+ * Run up to `n` queued animation frames.
+ *
+ * Each frame is taken from the queue before being run, so a callback that
+ * schedules the next frame — which is how the sampling loop continues — is
+ * picked up by the following iteration rather than immediately.
+ *
+ * @returns {number} how many frames actually ran
+ */
+function pumpFrames(n) {
+  let ran = 0;
+  for (let i = 0; i < n; i++) {
+    const f = frameQueue.shift();
+    if (!f) break;
+    f.fn(ran * 16);
+    ran++;
+  }
+  return ran;
+}
+
+/** How many frames are waiting. Zero means nothing is animating. */
+function pendingFrames() { return frameQueue.length; }
 
 /**
  * Install a global `document` (and the few window globals shatool uses)
@@ -244,10 +269,28 @@ function install(htmlPath) {
   if (typeof globalThis.addEventListener !== "function") {
     globalThis.addEventListener = () => {};
   }
+
+  /* Frames are queued, never fired on a timer, so a test drives the sampling
+   * loop deterministically with pumpFrames() instead of waiting on wall
+   * clock. Without this the loop would either not run at all under test or
+   * run an unpredictable number of times. */
+  frameQueue.length = 0;
+  nextFrameId = 1;
+  globalThis.requestAnimationFrame = (fn) => {
+    const id = nextFrameId++;
+    frameQueue.push({ id, fn });
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => {
+    const i = frameQueue.findIndex((f) => f.id === id);
+    if (i >= 0) frameQueue.splice(i, 1);
+  };
   /* Left undefined on purpose: ui-canvas.js guards on
    * `typeof ResizeObserver === "function"`, and leaving it absent exercises
    * the fallback path that older browsers take. */
   return doc;
 }
 
-module.exports = { install, fire, findAll, Node: Node_ };
+module.exports = {
+  install, fire, findAll, pumpFrames, pendingFrames, Node: Node_,
+};
