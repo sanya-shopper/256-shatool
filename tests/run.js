@@ -2309,6 +2309,48 @@ check("each frame samples, advances the counter, and redraws", () => {
     "and must still be the digest of the message on screen");
 });
 
+check("each redraw shows that batch's best sample, not its last", () => {
+  /* The digest on screen must be the best of the batch just drawn, which is
+   * checkable without controlling the random source: its leading-zero count
+   * has to equal the batch figure the panel reports. */
+  const batchBest = () => {
+    const m = el("search-stats").innerHTML
+      .match(/best in last redraw<\/span><span class="n">(\d+) of/);
+    return m ? Number(m[1]) : -1;
+  };
+
+  for (let i = 0; i < 6; i++) {
+    dom.pumpFrames(1);
+    if (batchBest() < 0) continue;          // a glow frame, not a sampling one
+    eq(P.leadingZeroBits(hx(shownDigest())), batchBest(),
+      "the shown digest must be the batch's best");
+    eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513),
+      "and must still be the digest of the message on screen");
+  }
+  ok(batchBest() >= 0, "the batch figure must be reported at all");
+});
+
+check("the batch best is reported with the batch size", () => {
+  const stats = el("search-stats").innerHTML;
+  ok(/best in last redraw<\/span><span class="n">\d+ of \d+ samples/.test(stats),
+    stats);
+  /* Batch size is the per-redraw rate, which this run set to 5. */
+  ok(/best in last redraw<\/span><span class="n">\d+ of 5 samples/.test(stats),
+    stats);
+});
+
+check("a batch best can be worse than the session best", () => {
+  /* They are different quantities and the panel must not conflate them: the
+   * session best only ever climbs, a batch best is redrawn from scratch. */
+  const sessionBest = Number(el("search-stats").innerHTML
+    .match(/best so far<\/span><span class="n">(\d+) zero bits/)[1]);
+  const batch = Number(el("search-stats").innerHTML
+    .match(/best in last redraw<\/span><span class="n">(\d+) of/)[1]);
+  ok(sessionBest >= batch,
+    "the session best must be at least any single batch's: " +
+    sessionBest + " vs " + batch);
+});
+
 check("sampling moves only the window's bits", () => {
   const hexBefore = el("input-hex").value;
   dom.pumpFrames(6);

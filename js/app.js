@@ -69,6 +69,10 @@
       bestNbits: -1,
       /** Set when a pause rewound the message, so the UI can say so. */
       rewound: false,
+      /** Best leading-zero count in the most recent redraw's batch, and how
+       *  many samples that batch drew. */
+      lastBatchBest: -1,
+      lastBatchSize: 0,
       found: false,
       startedAt: 0,
       rate2: 0,           // measured samples per second
@@ -301,6 +305,21 @@
     });
 
     s.attempts += res.attempts;
+    s.lastBatchBest = res.bestBits;
+    s.lastBatchSize = res.attempts;
+
+    /* Show the best point of this batch rather than whichever sample the
+     * batch happened to end on. At five hundred samples between redraws the
+     * last one is an arbitrary draw and the frame says nothing; the best of
+     * the batch is a real point that was really sampled and is the closest
+     * this redraw came. It also makes the picture legible — best-of-500 lands
+     * around nine leading zeros, so the raster shows a run rather than
+     * flickering noise.
+     *
+     * This is not the session best, which is tracked separately and is what a
+     * pause restores. A later batch may well be worse than an earlier one. */
+    if (res.bestBytes) state.msg.bytes.set(res.bestBytes);
+
     if (res.bestBits > s.best) {
       s.best = res.bestBits;
       s.bestBytes = res.bestBytes;
@@ -428,6 +447,8 @@
       s.rewound = false;
       s.found = false;
       s.rate2 = 0;
+      s.lastBatchBest = -1;
+      s.lastBatchSize = 0;
       state.flip = null;
       cancelFlipScan();
       render();
