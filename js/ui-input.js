@@ -56,6 +56,7 @@
     var elRate = document.getElementById("search-rate");
     var elSearchBtn = document.getElementById("btn-search");
     var elSearchReset = document.getElementById("btn-search-reset");
+    var elIncrement = document.getElementById("btn-increment");
     var elSearchStats = document.getElementById("search-stats");
     var elBestFlip = document.getElementById("btn-best-flip");
     var elBestPair = document.getElementById("btn-best-pair");
@@ -107,6 +108,7 @@
     });
     elSearchBtn.addEventListener("click", function () { cb.onToggleSearch(); });
     elSearchReset.addEventListener("click", function () { cb.onResetSearch(); });
+    elIncrement.addEventListener("click", function () { cb.onIncrement(); });
     elBestFlip.addEventListener("click", function () { cb.onBestFlip(); });
     elBestPair.addEventListener("click", function () {
       if (elBestPair.classList.contains("running")) cb.onCancelScan();
@@ -344,6 +346,7 @@
        * touch the message while a flip scan is walking it. */
       elSearchBtn.disabled = state.msg.nbits === 0 || scanning;
       var win = s.window;
+      elIncrement.disabled = win.width < 1 || s.running || scanning;
       elBestFlip.disabled = win.width < 1 || s.running || scanning;
 
       /* Whichever button started the running scan becomes its cancel button;
@@ -452,22 +455,38 @@
       if (!f) { elFlipResult.innerHTML = ""; return; }
 
       var unit = f.n === 1 ? "single-bit flips" : f.n + "-bit combinations";
-      var dir = f.improved ? "fell" : "rose";
-      var rows = [
-        ["tested", fmtCount(f.tested) + " " + unit],
-        ["kept", (f.n === 1 ? "bit " : "bits ") + f.indices.join(" + ")],
-        ["digest value", dir + " by ≈ 2^" + f.log2Delta.toFixed(1)],
-        ["leading zeros", f.zerosBefore + " → " + f.zerosAfter],
-      ];
-      var html = "";
-      for (var i = 0; i < rows.length; i++) {
-        html += '<div class="row"><span>' + rows[i][0] +
-          '</span><span class="n' + (i === 2 && !f.improved ? " warn" : "") +
-          '">' + rows[i][1] + "</span></div>";
-      }
-      if (!f.improved) {
-        html += '<div class="row"><span class="hint-inline">nothing at width ' +
-          f.n + " lowered it; this was the smallest rise</span></div>";
+      var label = f.n === 1 ? "bit " : "bits ";
+      var rows, html = "";
+
+      if (f.applied) {
+        rows = [
+          ["tested", fmtCount(f.tested) + " " + unit],
+          ["kept", label + f.indices.join(" + ")],
+          ["digest value", "fell by ≈ 2^" + f.log2Delta.toFixed(1)],
+          ["leading zeros", f.zerosBefore + " → " + f.zerosAfter],
+        ];
+        for (var i = 0; i < rows.length; i++) {
+          html += '<div class="row"><span>' + rows[i][0] +
+            '</span><span class="n">' + rows[i][1] + "</span></div>";
+        }
+      } else {
+        /* Nothing was applied, so the report has to be about what was
+         * rejected and why — and must not read as if the input moved. */
+        rows = [
+          ["tested", fmtCount(f.tested) + " " + unit],
+          ["best found", label + f.indices.join(" + ")],
+          ["would have risen by", "≈ 2^" + f.log2Delta.toFixed(1)],
+          ["leading zeros", f.zerosBefore + " → " + f.zerosCandidate +
+            " if taken"],
+        ];
+        for (var j = 0; j < rows.length; j++) {
+          html += '<div class="row"><span>' + rows[j][0] +
+            '</span><span class="n' + (j >= 2 ? " warn" : "") + '">' +
+            rows[j][1] + "</span></div>";
+        }
+        html += '<div class="row"><span class="hint-inline">no ' + f.n +
+          "-bit change improved on the starting point, so the input was " +
+          "left alone</span></div>";
       }
       elFlipResult.innerHTML = html;
     }

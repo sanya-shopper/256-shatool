@@ -170,6 +170,26 @@
   }
 
   /**
+   * The value as a fraction of the whole 256-bit space, in [0, 1).
+   *
+   * value / 2^256, built from the top SIX bytes — 48 bits, comfortably
+   * inside a double's 53-bit mantissa. Eight bytes would be the obvious
+   * choice and is wrong: 2^64 - 1 is not representable, so an all-ones value
+   * rounds up and the function returns exactly 1.0, which is outside the
+   * half-open range it promises and puts the point on top of zero. Six bytes
+   * divides exactly and stays below 1.
+   *
+   * Forty-eight bits is far more precision than the result can be used at
+   * anyway: one pixel on any circle that fits on a screen spans some 2^248
+   * values.
+   */
+  function unitFraction(bytes) {
+    var f = 0;
+    for (var i = 31; i >= 26; i--) f = f * 256 + bytes[i];
+    return f / Math.pow(256, 6);
+  }
+
+  /**
    * Compare two 32-byte little-endian values.
    * @returns {number} -1 if a < b, 0 if equal, 1 if a > b
    */
@@ -436,6 +456,7 @@
     targetBytes: targetBytes,
     compareToTarget: compareToTarget,
     compareValues: compareValues,
+    unitFraction: unitFraction,
     sub256: sub256,
     leadingZeroBits: leadingZeroBits,
     countLeadingZeroBytes: countLeadingZeroBytes,

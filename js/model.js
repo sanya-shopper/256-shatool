@@ -28,17 +28,23 @@
   // 1. Constants
   // -------------------------------------------------------------------
 
-  /* The default message length, in bits. Chosen because it is awkward in
-   * three separate ways at once, and each one is a thing worth seeing:
+  /* The default message length, in bits: 256, which is 32 bytes — the same
+   * width as the digest. Input and output are then the same size, so the two
+   * bit rasters can be read against each other directly, and the message
+   * fits in a single block with room for its padding.
    *
-   *   - It is not a multiple of 8, so the final byte carries exactly one
-   *     significant bit and seven that must be zero.
-   *   - It is one bit past 512, so padding cannot fit in the first block and
-   *     the message occupies two blocks. Block 1 is almost entirely padding.
-   *   - The chaining value entering block 1 is therefore a real, computed
-   *     value rather than the FIPS IV, so the two-block path is exercised.
+   * This default is deliberately the simple case. It is byte-aligned, so no
+   * bit of the final byte is locked, and it is one block, so there is only
+   * one chaining value and it is the FIPS IV. The awkward cases are one
+   * field away and worth visiting:
+   *
+   *   - any length not a multiple of 8 (say 517) gives a final byte whose
+   *     low bits are not part of the message and must be zero;
+   *   - 513 is one bit past a block, so padding cannot fit alongside it and
+   *     the message occupies two blocks, the second almost entirely padding,
+   *     compressed against a computed chaining value rather than the IV.
    */
-  var DEFAULT_NBITS = 513;
+  var DEFAULT_NBITS = 256;
 
   /* Hard ceiling on what the UI will accept. SHA-256 itself allows up to
    * 2^64 - 1 bits; this tool renders every bit of the message and every
@@ -153,6 +159,39 @@
       setBit(msg, i, r() < 0.5 ? 1 : 0);
     }
     return clearTrailingBits(msg);
+  }
+
+  /**
+   * Add one to a contiguous run of bits read as a big-endian integer.
+   *
+   * The counterpart to `randomizeRegion`: same window, systematic instead of
+   * random. This is what a miner's nonce field actually does — increment —
+   * and having both makes the point that it does not matter which you use.
+   * Enumerating in order and drawing at random cover the space at the same
+   * rate, because the digest has no more structure in one order than the
+   * other; only the bookkeeping differs.
+   *
+   * Bit `start + width - 1` is the least significant, so the carry propagates
+   * from the end of the window backwards to its start. On overflow the window
+   * returns to all zeros and `true` is returned, which is a full cycle of the
+   * counter rather than an error.
+   *
+   * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED
+   * @returns {boolean} whether the counter wrapped back to zero
+   */
+  function incrementRegion(msg, start, width) {
+    var lo = Math.max(0, start);
+    var hi = Math.min(msg.nbits, start + width);
+    for (var i = hi - 1; i >= lo; i--) {
+      if (getBit(msg, i) === 0) {
+        setBit(msg, i, 1);
+        clearTrailingBits(msg);
+        return false;
+      }
+      setBit(msg, i, 0);            // carry into the next bit up
+    }
+    clearTrailingBits(msg);
+    return hi > lo;                 // every bit was 1: wrapped
   }
 
   /** Zero the insignificant low bits of the final byte. */
@@ -449,6 +488,7 @@
     createMessage: createMessage,
     randomize: randomize,
     randomizeRegion: randomizeRegion,
+    incrementRegion: incrementRegion,
     clearTrailingBits: clearTrailingBits,
     getBit: getBit,
     setBit: setBit,

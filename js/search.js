@@ -59,10 +59,18 @@
     return { start: s, width: w };
   }
 
-  /** The window a fresh message should start with: the last `width` bits. */
+  /**
+   * The window a fresh message should start with: the FIRST `width` bits.
+   *
+   * The front of the message is the more interesting end to vary. Bits 0..63
+   * are bytes 0..7, which become schedule words W[0] and W[1] — the two words
+   * that enter the compression earliest and therefore propagate through every
+   * one of the 64 rounds. Varying the tail instead touches words that only
+   * reach the last handful of rounds directly, and the canvas shows far less
+   * happening.
+   */
   function defaultWindow(nbits, width) {
-    return clampWindow(nbits, nbits - (width || WINDOW_BITS),
-      width || WINDOW_BITS);
+    return clampWindow(nbits, 0, width || WINDOW_BITS);
   }
 
   /**
@@ -398,13 +406,24 @@
       },
 
       /**
-       * Apply the winning combination to the message.
+       * Apply the winning combination — but only if it is an improvement.
+       *
+       * A scan of width n never tries the do-nothing change, so its best can
+       * be worse than the point it started from. Moving the input there
+       * anyway would be actively unhelpful: the user asked for the best
+       * available change, and when every available change is a step backwards
+       * the right answer is to say so and stay put. `applied` reports which
+       * happened, and `indices` still names what the best candidate was so
+       * the result is informative either way.
+       *
        * @returns {Object|null} null if nothing was ever tried
        */
       apply: function () {
         if (!bestIdx) return null;
-        for (var i = 0; i < bestIdx.length; i++) M.toggleBit(msg, bestIdx[i]);
         var improved = P.compareValues(bestDigest, base) < 0;
+        if (improved) {
+          for (var i = 0; i < bestIdx.length; i++) M.toggleBit(msg, bestIdx[i]);
+        }
         var delta = improved
           ? P.sub256(base, bestDigest).diff
           : P.sub256(bestDigest, base).diff;
@@ -414,6 +433,10 @@
           before: base,
           after: bestDigest,
           improved: improved,
+          applied: improved,
+          /* The digest the message actually has now — the candidate only if
+           * it was applied, otherwise the one it started with. */
+          resulting: improved ? bestDigest : base,
           delta: delta,
           log2Delta: P.log2Value(delta),
           tested: tested,

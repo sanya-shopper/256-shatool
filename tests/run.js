@@ -78,9 +78,21 @@ function throws(fn, what) {
 // Load the application into this process
 // ---------------------------------------------------------------------
 
-const SCRIPTS = ["js/vendor/shavar.js", "js/model.js", "js/pow.js",
-                 "js/search.js"];
-for (const rel of SCRIPTS) {
+/* The script list is read out of index.html rather than repeated here, in
+ * the order the page loads them. A new module added to the page is therefore
+ * picked up automatically; a hardcoded list silently omits it and the whole
+ * smoke suite fails with an undefined global. */
+const INDEX_HTML = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+const ALL_SCRIPTS = [...INDEX_HTML.matchAll(/<script[^>]*\bsrc="([^"]+)"/g)]
+  .map((m) => m[1]);
+
+/* The DOM-free layers load now, so the model tests below can use them. The
+ * UI layer needs a document and is loaded later, in the smoke group. */
+const isUiScript = (p) => /\/(ui-[^/]+|app)\.js$/.test(p);
+const MODEL_SCRIPTS = ALL_SCRIPTS.filter((p) => !isUiScript(p));
+const UI_SCRIPTS = ALL_SCRIPTS.filter(isUiScript);
+
+for (const rel of MODEL_SCRIPTS) {
   vm.runInThisContext(fs.readFileSync(path.join(ROOT, rel), "utf8"), {
     filename: rel,
   });
@@ -690,8 +702,12 @@ check("compareValues orders by significance, not by byte position", () => {
 group("search: sampling a contiguous window");
 // ---------------------------------------------------------------------
 
-check("the default window is the last 64 bits", () => {
-  eq(Q.defaultWindow(513, 64), { start: 449, width: 64 });
+check("the default window is the first 64 bits", () => {
+  /* The front of the message becomes schedule words W[0] and W[1], which
+     propagate through all 64 rounds; the tail reaches far fewer directly. */
+  eq(Q.defaultWindow(513, 64), { start: 0, width: 64 });
+  eq(Q.defaultWindow(256, 64), { start: 0, width: 64 });
+  eq(Q.defaultWindow(40, 64), { start: 0, width: 40 }, "a short message");
   eq(Q.WINDOW_BITS, 64);
 });
 
@@ -1239,6 +1255,57 @@ check("a ranged scan finds the best within the range, not overall", () => {
   eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
 });
 
+check("apply() declines when the best candidate is worse than the start", () => {
+  /* A width-n scan never tries the do-nothing change, so its best can be a
+     step backwards. Aimed at a single bit known to raise the digest. */
+  const msg = M.randomize(M.createMessage(256));
+  const base = S.hashEx(msg.bytes, msg.nbits);
+
+  let worse = -1;
+  for (let i = 0; i < 256 && worse < 0; i++) {
+    M.toggleBit(msg, i);
+    if (P.compareValues(S.hashEx(msg.bytes, msg.nbits), base) > 0) worse = i;
+    M.toggleBit(msg, i);
+  }
+  ok(worse >= 0, "some bit must raise the digest");
+
+  const before = Array.from(msg.bytes);
+  const scan = Q.createFlipScan(msg, 1, { start: worse, width: 1 });
+  scan.step(1);
+  const res = scan.apply();
+
+  eq(res.applied, false);
+  eq(res.improved, false);
+  eq(res.indices, [worse], "it still names the candidate it rejected");
+  eq(Array.from(msg.bytes), before, "the message must not have moved");
+  eq(S.bytesToHex(res.resulting), S.bytesToHex(base),
+    "`resulting` is what the message actually has, not the candidate");
+  ok(S.bytesToHex(res.after) !== S.bytesToHex(base),
+    "`after` is still the rejected candidate, for reporting");
+});
+
+check("apply() takes an improvement, and says it did", () => {
+  const msg = M.randomize(M.createMessage(256));
+  const base = S.hashEx(msg.bytes, msg.nbits);
+
+  let better = -1;
+  for (let i = 0; i < 256 && better < 0; i++) {
+    M.toggleBit(msg, i);
+    if (P.compareValues(S.hashEx(msg.bytes, msg.nbits), base) < 0) better = i;
+    M.toggleBit(msg, i);
+  }
+  ok(better >= 0, "some bit must lower the digest");
+
+  const scan = Q.createFlipScan(msg, 1, { start: better, width: 1 });
+  scan.step(1);
+  const res = scan.apply();
+
+  eq(res.applied, true);
+  eq(res.indices, [better]);
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(res.after));
+  eq(S.bytesToHex(res.resulting), S.bytesToHex(res.after));
+});
+
 check("a range narrower than n yields nothing", () => {
   const msg = M.randomize(M.createMessage(100));
   const scan = Q.createFlipScan(msg, 4, { start: 10, width: 3 });
@@ -1321,6 +1388,104 @@ check("an empty message produces an empty map", () => {
   const nz = Q.leadingZeroDeltaMap(M.createMessage(0));
   eq(nz.map.length, 0);
   eq(nz.same + nz.better + nz.worse, 0);
+});
+
+// ---------------------------------------------------------------------
+group("model: counting through a range");
+// ---------------------------------------------------------------------
+
+check("incrementRegion counts up in big-endian order", () => {
+  const msg = M.createMessage(16);
+  const seen = [];
+  for (let i = 0; i < 6; i++) {
+    seen.push(M.messageHex(msg));
+    M.incrementRegion(msg, 8, 8);        // the second byte only
+  }
+  eq(seen, ["0000", "0001", "0002", "0003", "0004", "0005"],
+    "the last bit of the range is the least significant");
+});
+
+check("the carry propagates to the front of the range and no further", () => {
+  const msg = M.createMessage(24);
+  M.setMessageHex(msg, "ff00ff");
+  /* Range is the middle byte alone; its neighbours must not be disturbed
+     even when it overflows. */
+  for (let i = 0; i < 256; i++) M.incrementRegion(msg, 8, 8);
+  eq(M.messageHex(msg), "ff00ff", "256 increments is a full cycle");
+
+  M.incrementRegion(msg, 8, 8);
+  eq(M.messageHex(msg), "ff01ff");
+});
+
+check("incrementRegion reports a wrap, and only on a wrap", () => {
+  const msg = M.createMessage(8);
+  eq(M.incrementRegion(msg, 0, 4), false, "0 -> 1");
+  M.setMessageHex(msg, "e0");                 // range bits are 1110
+  eq(M.incrementRegion(msg, 0, 4), false, "14 -> 15");
+  eq(M.messageHex(msg), "f0");
+  eq(M.incrementRegion(msg, 0, 4), true, "15 -> 0 wraps");
+  eq(M.messageHex(msg), "00");
+});
+
+check("counting a range never disturbs bits outside it", () => {
+  const msg = M.randomize(M.createMessage(200));
+  const before = Array.from(msg.bytes);
+  for (let i = 0; i < 300; i++) M.incrementRegion(msg, 64, 16);
+  for (let i = 0; i < 200; i++) {
+    const inRange = i >= 64 && i < 80;
+    if (inRange) continue;
+    const b = i >> 3, mask = 1 << (7 - (i & 7));
+    eq((msg.bytes[b] & mask) !== 0, (before[b] & mask) !== 0, "bit " + i);
+  }
+});
+
+check("counting keeps a sub-byte message legal", () => {
+  const msg = M.randomize(M.createMessage(513));
+  for (let i = 0; i < 40; i++) {
+    M.incrementRegion(msg, 449, 64);
+    S.checkTrailingBits(msg.bytes, msg.nbits);
+  }
+});
+
+check("counting enumerates distinct points, unlike random sampling", () => {
+  /* The point of having both: a counter cannot repeat until it cycles,
+     whereas random draws collide by the birthday bound. */
+  const msg = M.createMessage(64);
+  const seen = new Set();
+  for (let i = 0; i < 500; i++) {
+    M.incrementRegion(msg, 0, 16);
+    seen.add(M.messageHex(msg));
+  }
+  eq(seen.size, 500, "500 increments must give 500 distinct states");
+});
+
+// ---------------------------------------------------------------------
+group("pow: mapping a digest onto the circle");
+// ---------------------------------------------------------------------
+
+check("unitFraction maps the value space onto [0, 1)", () => {
+  const zero = new Uint8Array(32);
+  eq(P.unitFraction(zero), 0);
+
+  const half = new Uint8Array(32); half[31] = 0x80;   // 2^255
+  eq(P.unitFraction(half), 0.5);
+
+  const quarter = new Uint8Array(32); quarter[31] = 0x40;
+  eq(P.unitFraction(quarter), 0.25);
+
+  const max = new Uint8Array(32).fill(0xff);
+  ok(P.unitFraction(max) < 1, "must stay below 1");
+  ok(P.unitFraction(max) > 0.9999, "but only just");
+});
+
+check("unitFraction is driven by the most significant bytes", () => {
+  /* Byte 31 dominates; byte 0 is far below a double's precision and must not
+     move the answer at all. */
+  const a = new Uint8Array(32); a[31] = 0x10;
+  const b = new Uint8Array(32); b[31] = 0x10; b[0] = 0xff;
+  eq(P.unitFraction(a), P.unitFraction(b));
+  const c = new Uint8Array(32); c[31] = 0x11;
+  ok(P.unitFraction(c) > P.unitFraction(a));
 });
 
 // ---------------------------------------------------------------------
@@ -1412,8 +1577,7 @@ const D = dom.install(path.join(ROOT, "index.html"));
  * stub reports readyState "complete". */
 let bootError = null;
 try {
-  for (const rel of ["js/ui-input.js", "js/ui-canvas.js", "js/ui-output.js",
-                     "js/app.js"]) {
+  for (const rel of UI_SCRIPTS) {
     vm.runInThisContext(fs.readFileSync(path.join(ROOT, rel), "utf8"),
       { filename: rel });
   }
@@ -1437,16 +1601,53 @@ const shownDigest = () =>
 /** The 256 raster cells, in proof-of-work bit order. */
 const rasterCells = () => cellsIn("digest-bit-raster", "br-bit");
 
+/* The chaining strip and the legend are static text, so they are still built
+ * with innerHTML and are read as strings. */
+const chainWords = () =>
+  [...el("chaining").innerHTML.matchAll(/class="cv-w [ae]"[^>]*>([0-9a-f]{8})</g)]
+    .map((m) => m[1]);
+/** Set the message length through the real control. */
+const setNbits = (n) => {
+  el("input-nbits").value = String(n);
+  dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
+};
+/** Set the difficulty through the real nBits field. */
+const setNBits = (hex) => {
+  el("pow-nbits-custom").value = hex;
+  dom.fire(el("pow-nbits-custom"), "input", { target: el("pow-nbits-custom") });
+};
+/** Set the sampling range through the real controls, inclusive. */
+const setRange = (a, b) => {
+  el("search-start").value = String(a);
+  el("search-end").value = String(b);
+  dom.fire(el("search-end"), "change", { target: el("search-end") });
+};
+/** The sampler's attempt total, read back off the panel. */
+const sampleCount = () => {
+  const m = el("search-stats").innerHTML
+    .match(/points tried<\/span><span class="n">([\d,]+)</);
+  return m ? Number(m[1].replace(/,/g, "")) : -1;
+};
+const selectBlock = (i) => dom.fire(el("block-tabs"), "click",
+  { target: { classList: { contains: () => true }, getAttribute: () => String(i) } });
+
+
 check("the application boots without throwing", () => {
   if (bootError) throw new Error(bootError.stack || String(bootError));
   ok(true);
 });
 
-check("it starts on a random 513-bit message", () => {
-  eq(el("stat-nbits").textContent, "513 bits");
-  eq(el("stat-blocks").textContent, "2 blocks");
-  eq(el("input-nbits").value, "513");
-  eq(el("input-hex").value.length, 130, "65 bytes as hex");
+check("it starts on a random 256-bit message in one block", () => {
+  eq(el("stat-nbits").textContent, "256 bits");
+  eq(el("stat-blocks").textContent, "1 block");
+  eq(el("input-nbits").value, "256");
+  eq(el("input-hex").value.length, 64, "32 bytes as hex — the digest's width");
+});
+
+check("it starts sampling the first 64 bits", () => {
+  eq(el("search-start").value, "0");
+  eq(el("search-end").value, "63");
+  eq(el("search-window-label").textContent, "64 bits");
 });
 
 check("the initial message is not all zeros", () => {
@@ -1464,19 +1665,19 @@ check("the shown digest is the digest of the shown message", () => {
   /* The cross-check that matters: the left panel and the right panel must be
    * describing the same message. Recomputed here from the hex on screen. */
   const hexShown = el("input-hex").value;
-  eq(shownDigest(), S.hashHex(hx(hexShown), 513));
+  eq(shownDigest(), S.hashHex(hx(hexShown), 256));
 });
 
 check("the input grid has one editable cell per message bit", () => {
-  eq(bitCells().length, 513);
+  eq(bitCells().length, 256);
   const locked = dom.findAll(el("hex-grid"),
     (n) => n.classList.contains("locked"));
-  eq(locked.length, 7, "the final byte's seven insignificant bits");
+  eq(locked.length, 0, "256 is byte-aligned, so nothing is locked");
 });
 
 check("the block tabs offer exactly the padded block count", () => {
   const tabs = el("block-tabs").innerHTML.match(/data-block="\d+"/g) || [];
-  eq(tabs.length, 2);
+  eq(tabs.length, 1, "256 bits and its padding fit in one block");
   ok(/class="tab active" data-block="0"/.test(el("block-tabs").innerHTML));
 });
 
@@ -1490,7 +1691,7 @@ check("clicking a bit cell flips it and changes the digest", () => {
   ok(afterHex !== beforeHex, "the message should have changed");
   const after = shownDigest();
   ok(after !== before, "the digest should have changed");
-  eq(after, S.hashHex(hx(afterHex), 513), "and be correct for the new message");
+  eq(after, S.hashHex(hx(afterHex), 256), "and be correct for the new message");
 
   /* Flip it back, and everything should return exactly. */
   dom.fire(el("hex-grid"), "click", { target: bitCells()[0] });
@@ -1498,31 +1699,48 @@ check("clicking a bit cell flips it and changes the digest", () => {
   eq(shownDigest(), before);
 });
 
-check("a locked bit cell does nothing when clicked", () => {
-  const before = el("input-hex").value;
-  const locked = dom.findAll(el("hex-grid"),
-    (n) => n.classList.contains("locked"))[0];
-  dom.fire(el("hex-grid"), "click", { target: locked });
-  eq(el("input-hex").value, before, "bit 513 is not part of the message");
-});
-
 check("editing a hex byte updates the digest", () => {
   const inputs = dom.findAll(el("hex-grid"),
     (n) => n.classList.contains("byte-hex"));
-  eq(inputs.length, 65);
+  eq(inputs.length, 32);
   inputs[0].value = "ff";
   dom.fire(el("hex-grid"), "input", { target: inputs[0] });
   eq(el("input-hex").value.slice(0, 2), "ff");
-  eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513));
+  eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 256));
+});
+
+/* The default length is byte-aligned and single-block, which is the simple
+ * case. The awkward ones are still reachable and still have to work, so they
+ * are exercised here explicitly rather than relying on the default. */
+
+check("a sub-byte length locks the final byte's spare bits", () => {
+  setNbits(513);
+  const locked = dom.findAll(el("hex-grid"),
+    (n) => n.classList.contains("locked"));
+  eq(locked.length, 7, "the final byte's seven insignificant bits");
+  eq(bitCells().length, 513);
+
+  const before = el("input-hex").value;
+  dom.fire(el("hex-grid"), "click", { target: locked[0] });
+  eq(el("input-hex").value, before, "bit 513 is not part of the message");
 });
 
 check("the final byte is masked to its one significant bit", () => {
   const inputs = dom.findAll(el("hex-grid"),
     (n) => n.classList.contains("byte-hex"));
+  eq(inputs.length, 65);
   inputs[64].value = "ff";
   dom.fire(el("hex-grid"), "input", { target: inputs[64] });
   eq(el("input-hex").value.slice(-2), "80",
     "typing ff into the final byte of a 513-bit message stores 80");
+  eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513));
+});
+
+check("513 bits spans two blocks, the second seeded by the first", () => {
+  eq(el("stat-blocks").textContent, "2 blocks");
+  const tabs = el("block-tabs").innerHTML.match(/data-block="\d+"/g) || [];
+  eq(tabs.length, 2);
+  setNbits(256);
 });
 
 check("bad hex in the bulk field surfaces an error and does not crash", () => {
@@ -1535,10 +1753,10 @@ check("bad hex in the bulk field surfaces an error and does not crash", () => {
 });
 
 check("a valid bulk hex edit clears the error", () => {
-  el("input-hex").value = "ab".repeat(65);
+  el("input-hex").value = "ab".repeat(32);
   dom.fire(el("input-hex"), "input", { target: el("input-hex") });
   eq(el("msg-error").hidden, true);
-  eq(el("input-hex").value.slice(-2), "80", "final byte re-masked");
+  eq(el("input-hex").value, "ab".repeat(32));
 });
 
 check("changing the length re-shapes the grid and the block count", () => {
@@ -1611,16 +1829,12 @@ check("pinning a reference enables diff mode", () => {
     "the legend must switch grammar with the mode");
 });
 
-check("changing the difficulty moves the colour bands", () => {
-  const sel = el("pow-nbits");
-  const zeroBytes = () =>
-    cellsIn("digest-hex", "must-be-zero").length;
-  sel.value = "0x1d00ffff";
-  dom.fire(sel, "change", { target: sel });
-  eq(zeroBytes(), 3, "genesis requires three zero bytes");
-  sel.value = "0x17034a3f";
-  dom.fire(sel, "change", { target: sel });
-  eq(zeroBytes(), 9, "the mainnet example requires nine");
+check("editing nBits moves the colour bands", () => {
+  const zeroBytes = () => cellsIn("digest-hex", "must-be-zero").length;
+  setNBits("0x1d00ffff");
+  eq(zeroBytes(), 3, "the genesis target requires three zero bytes");
+  setNBits("0x17034a3f");
+  eq(zeroBytes(), 9, "the mainnet default requires nine");
 });
 
 check("the bit raster draws all 256 bits with row labels", () => {
@@ -1657,10 +1871,8 @@ check("PoW bit 0 is the top bit of the LAST digest byte", () => {
 });
 
 check("the required-zero run matches the target's leading zeros", () => {
-  const sel = el("pow-nbits");
   for (const [nb, expected] of [["0x17034a3f", 78], ["0x1d00ffff", 32]]) {
-    sel.value = nb;
-    dom.fire(sel, "change", { target: sel });
+    setNBits(nb);
     eq(cellsIn("digest-bit-raster", "req").length, expected,
       "required zero bits for nBits=" + nb);
     ok(new RegExp("needs ≥ " + expected + " leading zero bits")
@@ -1705,14 +1917,19 @@ check("the genesis block's raster would show 43 dark cells then a lit one", () =
   ok(P.leadingZeroBits(digest) >= P.leadingZeroBits(P.targetBytes(0x1d00ffff)));
 });
 
-check("a custom nBits is accepted and reflected", () => {
-  const sel = el("pow-nbits");
-  sel.value = "custom";
-  dom.fire(sel, "change", { target: sel });
-  eq(el("pow-nbits-custom-row").hidden, false);
-  el("pow-nbits-custom").value = "0x1b0404cb";
-  dom.fire(el("pow-nbits-custom"), "input", { target: el("pow-nbits-custom") });
-  ok(/0x1b0404cb/.test(el("pow-stats").innerHTML));
+check("an arbitrary nBits is accepted and reflected", () => {
+  setNBits("0x1b0404cb");
+  ok(/0x1b0404cb/.test(el("pow-stats").innerHTML), el("pow-stats").innerHTML);
+  /* Written back into the field in canonical form on the next render. */
+  eq(el("pow-nbits-custom").value, "0x1b0404cb");
+  setNBits("0x17034a3f");
+});
+
+check("the panel defaults to a mainnet difficulty", () => {
+  ok(/0x17034a3f/.test(html), "the field must ship with it");
+  ok(/nBits is how a Bitcoin block header stores its difficulty target/
+    .test(html), "and nBits must be explained in the tooltip");
+  ok(!/<select/.test(html), "no difficulty picker any more");
 });
 
 check("the output panel states the single-vs-double hashing caveat", () => {
@@ -1733,31 +1950,6 @@ check("randomize and zero both work from the buttons", () => {
   dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
   eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 24));
 });
-
-/* The chaining strip and the legend are static text, so they are still built
- * with innerHTML and are read as strings. */
-const chainWords = () =>
-  [...el("chaining").innerHTML.matchAll(/class="cv-w [ae]"[^>]*>([0-9a-f]{8})</g)]
-    .map((m) => m[1]);
-/** Set the message length through the real control. */
-const setNbits = (n) => {
-  el("input-nbits").value = String(n);
-  dom.fire(el("input-nbits"), "change", { target: el("input-nbits") });
-};
-/** Set the sampling range through the real controls, inclusive. */
-const setRange = (a, b) => {
-  el("search-start").value = String(a);
-  el("search-end").value = String(b);
-  dom.fire(el("search-end"), "change", { target: el("search-end") });
-};
-/** The sampler's attempt total, read back off the panel. */
-const sampleCount = () => {
-  const m = el("search-stats").innerHTML
-    .match(/points tried<\/span><span class="n">([\d,]+)</);
-  return m ? Number(m[1].replace(/,/g, "")) : -1;
-};
-const selectBlock = (i) => dom.fire(el("block-tabs"), "click",
-  { target: { classList: { contains: () => true }, getAttribute: () => String(i) } });
 
 check("the canvas legend covers all four bands including K", () => {
   /* Diff mode replaces the whole legend, so it is turned off first — the
@@ -1818,14 +2010,17 @@ check("the chaining words match the trace's own seed columns", () => {
 });
 
 check("the sampled window is marked in the input grid, 64 bits wide", () => {
+  setNbits(256);
+  setRange(0, 63);
   const marked = bitCells().filter((c) => c.classList.contains("in-window"));
   eq(marked.length, 64);
   eq(marked.map((c) => Number(c.getAttribute("data-bit"))),
-    Array.from({ length: 64 }, (_, i) => 449 + i),
-    "the window must be the last 64 bits, and contiguous");
+    Array.from({ length: 64 }, (_, i) => i),
+    "the window must be the first 64 bits, and contiguous");
 });
 
 check("the sampling range is set by typing start and end bits", () => {
+  setNbits(513);
   const setRange = (a, b) => {
     el("search-start").value = String(a);
     el("search-end").value = String(b);
@@ -1848,6 +2043,7 @@ check("the sampling range is set by typing start and end bits", () => {
 });
 
 check("an out-of-range or inverted range is clamped, never rejected", () => {
+  setNbits(513);
   const setRange = (a, b) => {
     el("search-start").value = String(a);
     el("search-end").value = String(b);
@@ -1870,6 +2066,7 @@ check("an out-of-range or inverted range is clamped, never rejected", () => {
 });
 
 check("a resize clamps the range, and growing back restores it", () => {
+  setNbits(513);
   /* The requested range is kept apart from the clamped window precisely so
    * this round trip is lossless. Clamping in place would collapse 400..500
    * to a single bit and never recover it. */
@@ -1898,6 +2095,10 @@ check("a resize clamps the range, and growing back restores it", () => {
 });
 
 check("starting a run schedules frames and shows it is running", () => {
+  /* The sampling sequence that follows runs on a 513-bit message with the
+     window on its last 64 bits, so the byte arithmetic below is explicit. */
+  setNbits(513);
+  setRange(449, 512);
   el("search-threshold").value = "200";        // unreachable, so it will not stop
   dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
   el("search-rate").value = "5";
@@ -2042,14 +2243,66 @@ check("best single flip finds the same bit the module does", () => {
   eq(shownDigest(), S.bytesToHex(expected.after));
 });
 
-check("best single flip reports how far the digest moved", () => {
+/** A bit whose flip moves the digest value in the given direction. */
+function findBitWhereFlip(hexNow, nbits, direction) {
+  const probe = { bytes: hx(hexNow), nbits: nbits };
+  const base = S.hashEx(probe.bytes, nbits);
+  for (let i = 0; i < nbits; i++) {
+    M.toggleBit(probe, i);
+    const d = S.hashEx(probe.bytes, nbits);
+    M.toggleBit(probe, i);
+    if (Math.sign(P.compareValues(d, base)) === direction) return i;
+  }
+  return -1;
+}
+
+check("a flip that improves is applied, and the move is reported", () => {
+  /* Aimed at a single bit that is known to lower the digest, so the applied
+     branch is exercised deterministically rather than by luck. */
   setNbits(513);
-  setRange(0, 512);
+  /* From a fresh random message, where the digest is typical and about half
+     of all flips lower it. Starting from an already-searched point would be
+     flaky: after a good scan the value is small enough that most single
+     flips raise it. */
+  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+  const better = findBitWhereFlip(el("input-hex").value, 513, -1);
+  ok(better >= 0, "some bit must lower the digest");
+  setRange(better, better);
+
+  const beforeHex = el("input-hex").value;
   dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
+
   const out = el("flip-result").innerHTML;
-  ok(/513 single-bit flips/.test(out), "must say how many were tried: " + out);
-  ok(/(fell|rose) by ≈ 2\^/.test(out), "must size the move: " + out);
-  ok(/leading zeros/.test(out));
+  ok(el("input-hex").value !== beforeHex, "the input must have moved");
+  ok(new RegExp("kept</span><span class=\"n\">bit " + better + "<").test(out),
+    out);
+  ok(/fell by ≈ 2\^/.test(out), "must size the move: " + out);
+  ok(!/left alone/.test(out));
+});
+
+check("a scan that cannot improve leaves the input alone and says so", () => {
+  /* Aimed at a single bit that is known to raise the digest, so the only
+     candidate the scan has is a step backwards. */
+  setNbits(513);
+  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+  const worse = findBitWhereFlip(el("input-hex").value, 513, 1);
+  ok(worse >= 0, "some bit must raise the digest");
+  setRange(worse, worse);
+
+  const beforeHex = el("input-hex").value;
+  const beforeDigest = shownDigest();
+  dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
+
+  eq(el("input-hex").value, beforeHex, "the input must not have moved");
+  eq(shownDigest(), beforeDigest, "nor the digest");
+
+  const out = el("flip-result").innerHTML;
+  ok(/left alone/.test(out), "must say it declined: " + out);
+  ok(new RegExp("best found</span><span class=\"n\">bit " + worse + "<")
+    .test(out), "must still name the best candidate: " + out);
+  ok(/would have risen by/.test(out), out);
+  ok(/if taken/.test(out), "and must not read as if it happened: " + out);
+  ok(!/kept/.test(out), "nothing was kept: " + out);
 });
 
 check("best pair flip really does span several frames", () => {
@@ -2302,6 +2555,48 @@ check("hiding the bit rows leaves the hex editor working", () => {
   dom.fire(el("chk-showbits"), "change", { target: el("chk-showbits") });
   eq(bitCells().length, 24);
 });
+
+// ---------------------------------------------------------------------
+group("the value circle: drawing conventions");
+// ---------------------------------------------------------------------
+//
+// These helpers live in js/ui-circle.js, which is part of the UI layer and is
+// only loaded once a document exists, so they are exercised here rather than
+// with the rest of the pure-math groups above.
+
+check("a decrease in value is exactly a wrap through zero", () => {
+  /* The convention the drawing depends on: motion is always clockwise, so a
+     smaller value can only be reached by passing zero. */
+  const C = globalThis.SHATOOL_UI_CIRCLE;
+  eq(C.isWrap(0.9, 0.1), true, "a big drop wraps");
+  eq(C.isWrap(0.5, 0.4999), true, "so does a tiny one");
+  eq(C.isWrap(0.1, 0.9), false, "a rise does not");
+  eq(C.isWrap(0.5, 0.5), false, "nor does standing still");
+});
+
+check("the clockwise sweep is consistent with the wrap it implies", () => {
+  const C = globalThis.SHATOOL_UI_CIRCLE;
+  ok(Math.abs(C.sweep(0.1, 0.4) - 0.3) < 1e-12, "no wrap: the direct gap");
+  ok(Math.abs(C.sweep(0.9, 0.1) - 0.2) < 1e-12, "wrapped: through zero");
+  eq(C.sweep(0.5, 0.5), 0);
+  /* Whichever way, the sweep is a fraction of one turn. */
+  for (const [a, b] of [[0, 0.999], [0.999, 0], [0.3, 0.7], [0.7, 0.3]]) {
+    const s = C.sweep(a, b);
+    ok(s >= 0 && s < 1, a + " -> " + b + " swept " + s);
+    eq(C.isWrap(a, b), b < a);
+  }
+});
+
+check("angleOf puts zero at the top and runs clockwise", () => {
+  const C = globalThis.SHATOOL_UI_CIRCLE;
+  const TAU = Math.PI * 2;
+  eq(C.angleOf(0), -Math.PI / 2, "zero is straight up");
+  ok(Math.abs(C.angleOf(0.25) - 0) < 1e-12, "a quarter turn is to the right");
+  ok(Math.abs(C.angleOf(0.5) - Math.PI / 2) < 1e-12, "a half turn is down");
+  ok(C.angleOf(0.75) > C.angleOf(0.5), "angle increases with value");
+  ok(Math.abs((C.angleOf(1) - C.angleOf(0)) - TAU) < 1e-12, "a full turn");
+});
+
 
 // ---------------------------------------------------------------------
 

@@ -83,6 +83,9 @@
     /** Width for the general "best n-bit flip" control. */
     flipN: 3,
 
+    /** Whether the floating value-circle pane is expanded. */
+    circleOpen: true,
+
     /** Whether to classify every bit by its effect on the leading zeros. */
     showNeutral: false,
     /** The classification itself, recomputed by refresh() when enabled. */
@@ -154,6 +157,7 @@
     ui.input.render(state);
     ui.canvas.render(state);
     ui.output.render(state);
+    ui.circle.render(state);
     document.getElementById("stat-nbits").textContent =
       state.msg.nbits + " bits";
     document.getElementById("stat-blocks").textContent =
@@ -307,6 +311,13 @@
     if (res.found) {
       s.running = false;
       s.found = true;
+      /* Show the best point of the session, not merely the sample that
+       * happened to cross the threshold. The starting point can already have
+       * been better than the threshold asks for, and leaving the user on a
+       * worse sample than one already seen is never the right answer. Any
+       * point at least as good as the winner also clears the threshold, so
+       * this cannot contradict the "reached" message. */
+      rewindToBest();
     }
 
     /* The message was mutated in place by the sampler, so a full refresh is
@@ -324,6 +335,7 @@
     s.running = true;
     s.found = false;
     s.rewound = false;
+    noteCurrentPoint();
     /* Restart the clock but keep the counters: a pause and resume is one run
      * as far as the attempt total is concerned, and resetting is a separate
      * button. */
@@ -346,15 +358,27 @@
    * current message length, since a resize in between makes those bytes a
    * different message.
    */
+  /**
+   * Put the message back on the best point of the session, if there is one.
+   * @returns {boolean} whether it moved anything
+   */
+  function rewindToBest() {
+    var s = state.search;
+    if (!s.bestBytes || s.bestNbits !== state.msg.nbits ||
+        s.bestBytes.length !== state.msg.bytes.length) {
+      return false;
+    }
+    state.msg.bytes.set(s.bestBytes);
+    return true;
+  }
+
   function stopSearch() {
     var s = state.search;
     var wasRunning = s.running;
     s.running = false;
     if (rafId !== null) { caf(rafId); rafId = null; }
 
-    if (wasRunning && s.bestBytes && s.bestNbits === state.msg.nbits &&
-        s.bestBytes.length === state.msg.bytes.length) {
-      state.msg.bytes.set(s.bestBytes);
+    if (wasRunning && rewindToBest()) {
       s.rewound = true;
       refresh();
       return;
@@ -377,6 +401,16 @@
     onSetRate: function (n) {
       if (!Number.isInteger(n) || n < 1) return;
       state.search.rate = n;
+      render();
+    },
+    onIncrement: function () {
+      /* One step of the systematic counterpart to sampling. Counted as a
+       * point tried, like any other, so the session totals cover both. */
+      var s = state.search;
+      M.incrementRegion(state.msg, s.window.start, s.window.width);
+      s.attempts += 1;
+      refresh();
+      noteCurrentPoint();
       render();
     },
     onToggleSearch: function () {
@@ -413,6 +447,11 @@
 
     onCancelScan: function () { cancelFlipScan(); render(); },
 
+    onToggleCircle: function () {
+      state.circleOpen = !state.circleOpen;
+      render();
+    },
+
     onShowNeutral: function (v) {
       state.showNeutral = v;
       refresh();
@@ -426,9 +465,14 @@
       indices: res.indices,
       tested: res.tested,
       improved: res.improved,
+      applied: res.applied,
       log2Delta: res.log2Delta,
       zerosBefore: zerosBefore,
-      zerosAfter: P.leadingZeroBits(res.after),
+      /* What the message has now, which is the starting digest when the best
+       * candidate was a step backwards and nothing was applied. */
+      zerosAfter: P.leadingZeroBits(res.resulting),
+      /* What the rejected candidate would have given, for the report. */
+      zerosCandidate: P.leadingZeroBits(res.after),
     };
   }
 
@@ -443,6 +487,25 @@
 
   var flipScan = null;
   var flipRaf = null;
+
+  /**
+   * Fold the point the message is on right now into the session best.
+   *
+   * Called when a search begins. Without it, a search whose every point is
+   * worse than where it started would still record one of them as the
+   * session best — and a later pause would rewind to it, moving the input
+   * backwards on the strength of a search that found nothing. The starting
+   * point is not counted as a point tried, because it was not tried.
+   */
+  function noteCurrentPoint() {
+    var s = state.search;
+    var lz = P.leadingZeroBits(state.analysis.digest);
+    if (lz > s.best) {
+      s.best = lz;
+      s.bestBytes = Uint8Array.from(state.msg.bytes);
+      s.bestNbits = state.msg.nbits;
+    }
+  }
 
   /** A copy of the message with `indices` flipped, without disturbing it. */
   function bytesWithFlips(msg, indices) {
@@ -509,6 +572,7 @@
     if (scan.total === 0) return;
 
     var zerosBefore = P.leadingZeroBits(state.analysis.digest);
+    noteCurrentPoint();
 
     if (scan.total <= SYNC_LIMIT) {
       /* Recorded before apply(), while the message is still unflipped — that
@@ -615,6 +679,7 @@
     ui.input = root.SHATOOL_UI_INPUT.create(inputAll);
     ui.canvas = root.SHATOOL_UI_CANVAS.create(canvasCallbacks);
     ui.output = root.SHATOOL_UI_OUTPUT.create(outputCallbacks);
+    ui.circle = root.SHATOOL_UI_CIRCLE.create(searchCallbacks);
 
     refresh();
   }

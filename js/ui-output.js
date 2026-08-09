@@ -41,8 +41,6 @@
     var elDigestHex = document.getElementById("digest-hex");
     var elDigestBytes = document.getElementById("digest-bytes");
     var elShowBits = document.getElementById("chk-digest-bits");
-    var elSelect = document.getElementById("pow-nbits");
-    var elCustomRow = document.getElementById("pow-nbits-custom-row");
     var elCustom = document.getElementById("pow-nbits-custom");
     var elVerdict = document.getElementById("pow-verdict");
     var elStats = document.getElementById("pow-stats");
@@ -62,16 +60,6 @@
 
     elShowBits.addEventListener("change", function () {
       cb.onShowDigestBits(elShowBits.checked);
-    });
-
-    elSelect.addEventListener("change", function () {
-      if (elSelect.value === "custom") {
-        elCustomRow.hidden = false;
-        applyCustom();
-      } else {
-        elCustomRow.hidden = true;
-        cb.onSetNBits(parseInt(elSelect.value, 16));
-      }
     });
 
     elCustom.addEventListener("input", applyCustom);
@@ -419,24 +407,10 @@
     // ---------------------------------------------------------------
 
     function render(state) {
-      /* Keep the selector in step with the state, including when the state
-       * was set from somewhere other than this panel. */
-      var asHex = "0x" + state.nBits.toString(16).padStart(8, "0");
-      var matched = false;
-      for (var i = 0; i < elSelect.options.length; i++) {
-        if (elSelect.options[i].value.toLowerCase() === asHex) {
-          elSelect.selectedIndex = i;
-          elSelect.value = elSelect.options[i].value;
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        elSelect.value = "custom";
-        elCustomRow.hidden = false;
-        if (elCustom !== document.activeElement) elCustom.value = asHex;
-      } else {
-        elCustomRow.hidden = true;
+      /* Keep the field in step with the state, without fighting the caret
+       * while it is being typed into. */
+      if (elCustom !== document.activeElement) {
+        elCustom.value = "0x" + state.nBits.toString(16).padStart(8, "0");
       }
 
       if (!hexSpans) hexSpans = buildHexRow(elDigestHex, false);

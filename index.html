@@ -30,7 +30,7 @@
 
     <div class="control-row">
       <label for="input-nbits">Length</label>
-      <input type="number" id="input-nbits" min="0" max="4096" step="1" value="513">
+      <input type="number" id="input-nbits" min="0" max="4096" step="1" value="256">
       <span class="unit">bits</span>
     </div>
 
@@ -64,9 +64,9 @@
 
     <div class="control-row">
       <label for="search-start">Bits</label>
-      <input type="number" id="search-start" min="0" step="1" value="449">
+      <input type="number" id="search-start" min="0" step="1" value="0">
       <span class="unit">to</span>
-      <input type="number" id="search-end" min="0" step="1" value="512">
+      <input type="number" id="search-end" min="0" step="1" value="63">
       <span class="unit" id="search-window-label">64 bits</span>
     </div>
 
@@ -85,6 +85,8 @@
 
     <div class="control-row">
       <button type="button" id="btn-search">Start sampling</button>
+      <button type="button" id="btn-increment"
+              title="Read the range as a big-endian integer and add one — what a miner's nonce field does">Count +1</button>
       <button type="button" id="btn-search-reset">Reset</button>
     </div>
 
@@ -156,6 +158,89 @@
     </div>
 
     <div id="canvas-legend" class="legend"></div>
+
+    <details class="equations">
+      <summary>Update equations, fully expanded</summary>
+      <div class="eq-body">
+
+        <p class="eq-note"><strong>Notation.</strong>
+          <code>⊞</code> is addition modulo 2³², <code>⊕</code> exclusive or,
+          <code>∧</code> and, <code>¬</code> complement.
+          <code>ROTRⁿ</code> rotates a 32-bit word right by n,
+          <code>SHRⁿ</code> shifts it right by n and fills with zeros.
+          Every value below is one 32-bit word.</p>
+
+        <p class="eq-head">Seeding the window, at <code>t = 0</code></p>
+        <pre>A[−1] = H[0]   A[−2] = H[1]   A[−3] = H[2]   A[−4] = H[3]
+E[−1] = H[4]   E[−2] = H[5]   E[−3] = H[6]   E[−4] = H[7]</pre>
+        <p class="eq-note">These eight words are the incoming chaining value,
+          and they are the four columns left of the dashed rule on each of the
+          A and E bands. Note the reversal: the more negative the index, the
+          later the H. It follows from <code>a = A[t−1], b = A[t−2],
+          c = A[t−3], d = A[t−4]</code> read at <code>t = 0</code>.</p>
+
+        <p class="eq-head">The round, as usually written</p>
+        <pre>T1[t] = E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3]) ⊞ K[t] ⊞ W[t]
+T2[t] = Σ0(A[t−1]) ⊞ Maj(A[t−1],A[t−2],A[t−3])
+E[t]  = A[t−4] ⊞ T1[t]
+A[t]  = T1[t] ⊞ T2[t]</pre>
+
+        <p class="eq-head">With T1 and T2 substituted out</p>
+        <pre>E[t] = A[t−4] ⊞ E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3])
+              ⊞ K[t] ⊞ W[t]
+
+A[t] = E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3]) ⊞ K[t] ⊞ W[t]
+              ⊞ Σ0(A[t−1]) ⊞ Maj(A[t−1],A[t−2],A[t−3])</pre>
+        <p class="eq-note">The two differ by exactly two terms: E takes
+          <code>A[t−4]</code>, A takes <code>Σ0 ⊞ Maj</code>. That single
+          <code>A[t−4]</code> is the only path from the A track to the E
+          track in the whole function.</p>
+
+        <p class="eq-head">With the named functions substituted out too</p>
+        <pre>E[t] = A[t−4]
+     ⊞ E[t−4]
+     ⊞ (ROTR⁶(E[t−1]) ⊕ ROTR¹¹(E[t−1]) ⊕ ROTR²⁵(E[t−1]))
+     ⊞ ((E[t−1] ∧ E[t−2]) ⊕ (¬E[t−1] ∧ E[t−3]))
+     ⊞ K[t]
+     ⊞ W[t]
+
+A[t] = E[t−4]
+     ⊞ (ROTR⁶(E[t−1]) ⊕ ROTR¹¹(E[t−1]) ⊕ ROTR²⁵(E[t−1]))
+     ⊞ ((E[t−1] ∧ E[t−2]) ⊕ (¬E[t−1] ∧ E[t−3]))
+     ⊞ K[t]
+     ⊞ W[t]
+     ⊞ (ROTR²(A[t−1]) ⊕ ROTR¹³(A[t−1]) ⊕ ROTR²²(A[t−1]))
+     ⊞ ((A[t−1] ∧ A[t−2]) ⊕ (A[t−1] ∧ A[t−3]) ⊕ (A[t−2] ∧ A[t−3]))</pre>
+        <p class="eq-note">Nothing is hidden in a name any more. Every round
+          is these two sums, and the whole of SHA-256's compression is running
+          them for <code>t = 0 … 63</code>.</p>
+
+        <p class="eq-head">The message schedule</p>
+        <pre>W[t] = the block's t-th 32-bit word, big-endian            0 ≤ t &lt; 16
+
+W[t] = W[t−16]
+     ⊞ (ROTR⁷(W[t−15]) ⊕ ROTR¹⁸(W[t−15]) ⊕ SHR³(W[t−15]))
+     ⊞ W[t−7]
+     ⊞ (ROTR¹⁷(W[t−2]) ⊕ ROTR¹⁹(W[t−2]) ⊕ SHR¹⁰(W[t−2]))   16 ≤ t &lt; 64</pre>
+        <p class="eq-note">The schedule depends only on the block, never on
+          the chaining value — which is why the W band looks the same whatever
+          precedes it, and why it is computed for all 64 rounds even when the
+          round limit is lower.</p>
+
+        <p class="eq-head">Feed-forward, leaving the block</p>
+        <pre>H′[0] = H[0] ⊞ A[63]   H′[1] = H[1] ⊞ A[62]
+H′[2] = H[2] ⊞ A[61]   H′[3] = H[3] ⊞ A[60]
+H′[4] = H[4] ⊞ E[63]   H′[5] = H[5] ⊞ E[62]
+H′[6] = H[6] ⊞ E[61]   H′[7] = H[7] ⊞ E[60]</pre>
+        <p class="eq-note">The final four-wide window of each track, added to
+          the value that seeded it. This is the one step that is not
+          invertible, and it is what stops the compression function from being
+          run backwards. With the round limit at <code>r</code>, read
+          <code>A[r−1 … r−4]</code> and <code>E[r−1 … r−4]</code> instead.</p>
+
+      </div>
+    </details>
+
     <div id="chaining" class="chaining"></div>
     <div id="round-detail" class="round-detail"></div>
   </section>
@@ -180,20 +265,16 @@
 
     <h3>As Bitcoin reads it</h3>
 
-    <div class="control-row">
-      <label for="pow-nbits">Difficulty</label>
-      <select id="pow-nbits">
-        <option value="0x17034a3f">Mainnet (example)</option>
-        <option value="0x1d00ffff">Genesis block</option>
-        <option value="0x1f00ffff">Very easy</option>
-        <option value="custom">Custom…</option>
-      </select>
-    </div>
-
-    <div class="control-row" id="pow-nbits-custom-row" hidden>
+    <div class="control-row"
+         title="nBits is how a Bitcoin block header stores its difficulty target, packed into four bytes: one exponent byte followed by a three-byte coefficient, meaning target = coefficient × 256^(exponent − 3). A hash is accepted when its value is at or below that target, so a smaller coefficient or exponent means a harder difficulty. 0x17034a3f is a plausible mainnet value, not a live one.">
       <label for="pow-nbits-custom">nBits</label>
       <input type="text" id="pow-nbits-custom" value="0x17034a3f" spellcheck="false">
     </div>
+
+    <p class="hint-text">A mainnet difficulty target, packed the way a block
+      header packs it: exponent byte <code>17</code>, then coefficient
+      <code>034a3f</code>, meaning <code>0x034a3f × 256<sup>0x17−3</sup></code>.
+      Edit it to see the bands move.</p>
 
     <div class="field">
       <div class="field-label">All 256 bits, most significant first
@@ -232,6 +313,20 @@
 
 </main>
 
+<!-- Floating value-circle pane. Outside <main> so it can hover over any
+     column; positioned by CSS and moved by dragging its header. -->
+<aside id="circle-pane">
+  <div id="circle-header">
+    <button type="button" id="circle-toggle" aria-label="collapse">▾</button>
+    <span class="circle-title">Value circle</span>
+    <button type="button" id="circle-reset" title="Clear the trail and wrap count">clear</button>
+  </div>
+  <div id="circle-body">
+    <canvas id="circle-canvas"></canvas>
+    <div id="circle-stats" class="summary"></div>
+  </div>
+</aside>
+
 <script src="js/vendor/shavar.js"></script>
 <script src="js/model.js"></script>
 <script src="js/pow.js"></script>
@@ -239,6 +334,7 @@
 <script src="js/ui-input.js"></script>
 <script src="js/ui-canvas.js"></script>
 <script src="js/ui-output.js"></script>
+<script src="js/ui-circle.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

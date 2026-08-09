@@ -781,3 +781,143 @@ button:active { background: #1a212a; }
   .canvas-wrap { height: 420px; flex: 0 0 auto; }
   .digest-bytes { grid-template-columns: repeat(8, 1fr); }
 }
+
+/* ------------------------------------------------------------------ */
+/* Floating value-circle pane                                          */
+/* ------------------------------------------------------------------ */
+/*
+ * Anchored bottom-right until dragged, at which point ui-circle.js switches
+ * it to top/left. Kept above the panels but below nothing else, since it is
+ * the only floating thing on the page.
+ */
+
+#circle-pane {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 50;
+  width: 272px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  font-size: 11px;
+}
+
+#circle-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: move;
+  user-select: none;
+}
+#circle-pane.collapsed #circle-header { border-bottom: 0; }
+
+.circle-title {
+  flex: 1 1 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+#circle-toggle, #circle-reset {
+  background: transparent;
+  border: 0;
+  color: var(--fg-faint);
+  font-size: 11px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+#circle-toggle { font-size: 10px; width: 16px; }
+#circle-toggle:hover, #circle-reset:hover { color: var(--fg); background: transparent; }
+
+#circle-body { padding: 8px; }
+#circle-canvas { display: block; margin: 0 auto; }
+#circle-stats { margin-top: 6px; border-top: 1px solid var(--line-soft); }
+#circle-stats .hint-inline { line-height: 1.45; display: block; margin-top: 4px; }
+
+@media (max-width: 1100px) {
+  #circle-pane { position: static; width: auto; margin: 0 var(--panel-gap) var(--panel-gap); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Expanded update equations                                           */
+/* ------------------------------------------------------------------ */
+/*
+ * Sits under the canvas legend, which is where the seed window is named.
+ * A native <details> rather than a scripted toggle: the content is static, so
+ * it needs no JavaScript, and the browser gives the disclosure behaviour and
+ * its keyboard handling for free.
+ */
+
+.equations {
+  flex: 0 0 auto;
+  margin-top: 7px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 6px;
+  font-size: 11px;
+}
+
+.equations > summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  list-style-position: outside;
+  user-select: none;
+}
+.equations > summary:hover { color: var(--fg); }
+
+/* Bounded, so opening it cannot push the canvas out of the panel. */
+.eq-body {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+}
+
+.eq-head {
+  margin: 12px 0 4px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.eq-body > .eq-head:first-child { margin-top: 0; }
+
+.eq-body pre {
+  margin: 0;
+  padding: 6px 8px;
+  background: #0e1116;
+  border-left: 2px solid var(--accent-dim);
+  border-radius: 0 3px 3px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--fg);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.eq-note {
+  margin: 6px 0 0;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.eq-note strong { color: var(--fg-dim); }
+.eq-note code, .eq-body code {
+  font-family: var(--mono);
+  color: var(--fg-dim);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0 2px;
+  border-radius: 2px;
+}

@@ -144,6 +144,7 @@ function makeCtx() {
     save: noop, restore: noop, setTransform: noop,
     clearRect: noop, fillRect: noop, strokeRect: noop,
     beginPath: noop, moveTo: noop, lineTo: noop, stroke: noop, fill: noop,
+    arc: noop, arcTo: noop, closePath: noop, ellipse: noop, rect: noop,
     setLineDash: noop, fillText: noop, strokeText: noop,
     measureText: () => ({ width: 10 }),
     translate: noop, scale: noop, rotate: noop,
