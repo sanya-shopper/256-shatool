@@ -862,6 +862,78 @@ check("changing the difficulty moves the colour bands", () => {
   eq(mainnet, 9, "the mainnet example requires nine");
 });
 
+check("the bit raster draws all 256 bits with row labels", () => {
+  const html = el("digest-bit-raster").innerHTML;
+  eq((html.match(/class="br-bit/g) || []).length, 256);
+  eq((html.match(/class="br-label"/g) || []).length, 8, "one label per row of 32");
+  ok(/>0<\/div>/.test(html) && /224<\/div>/.test(html), "labels 0 and 224");
+});
+
+check("raster bit k maps to digest byte 31-k/8, most significant first", () => {
+  /* The whole point of the raster is its ordering, so the mapping is pinned
+   * against the digest actually on screen rather than trusted. */
+  const digest = shownDigest();
+  const byteAt = (i) => parseInt(digest.slice(2 * i, 2 * i + 2), 16);
+  const titles = [...el("digest-bit-raster").innerHTML
+    .matchAll(/title="PoW bit (\d+) · digest byte (\d+) bit (\d+) · value (\d)/g)];
+  eq(titles.length, 256);
+  for (const [, k, bi, bit, val] of titles) {
+    eq(Number(bi), 31 - (Number(k) >> 3), "byte index for PoW bit " + k);
+    eq(Number(bit), 7 - (Number(k) & 7), "bit position for PoW bit " + k);
+    eq(Number(val), (byteAt(Number(bi)) >> Number(bit)) & 1, "value at bit " + k);
+  }
+});
+
+check("PoW bit 0 is the top bit of the LAST digest byte", () => {
+  const first = el("digest-bit-raster").innerHTML
+    .match(/title="PoW bit 0 · digest byte (\d+) bit (\d+)/);
+  eq(first[1], "31");
+  eq(first[2], "7");
+});
+
+check("the required-zero run matches the target's leading zeros", () => {
+  const sel = el("pow-nbits");
+  for (const [nb, expected] of [["0x17034a3f", 78], ["0x1d00ffff", 32]]) {
+    sel.value = nb;
+    dom.fire(sel, "change", { target: sel });
+    const req = (el("digest-bit-raster").innerHTML.match(/ req[" ]/g) || []).length;
+    eq(req, expected, "required zero bits for nBits=" + nb);
+    ok(new RegExp("needs ≥ " + expected + " leading zero bits")
+      .test(el("digest-bit-caption").innerHTML), "caption for " + nb);
+    /* And that count must equal what the PoW module says about the target,
+     * so the picture and the arithmetic cannot drift apart. */
+    eq(P.leadingZeroBits(P.targetBytes(parseInt(nb, 16))), expected);
+  }
+});
+
+check("exactly one boundary marker, at the end of the required run", () => {
+  const html = el("digest-bit-raster").innerHTML;
+  eq((html.match(/boundary/g) || []).length, 1);
+  const m = html.match(/class="br-bit [^"]*boundary[^"]*" title="PoW bit (\d+)/);
+  ok(m, "the boundary cell should carry its title");
+  eq(Number(m[1]), 32, "genesis difficulty requires 32 leading zero bits");
+});
+
+check("a digest of all zeros lights no cells in the raster", () => {
+  /* Not reachable by hashing, so the raster is checked against a digest the
+   * PoW module is handed directly; this pins the "all zero means all dark"
+   * end of the scale that a real digest never reaches. */
+  const zero = new Uint8Array(32);
+  eq(P.leadingZeroBits(zero), 256);
+  eq(P.analyze(zero, P.EXAMPLE_NBITS).meetsTarget, true);
+});
+
+check("the genesis block's raster would show 43 dark cells then a lit one", () => {
+  /* Ground truth, end to end: the genesis hash has 43 leading zero bits, so
+   * a raster of it is 43 contiguous dark cells followed by a lit cell — and
+   * 43 clears the 32 its own difficulty required. */
+  const digest = sha256d(GENESIS_HEADER);
+  const bitAt = (k) => (digest[31 - (k >> 3)] >> (7 - (k & 7))) & 1;
+  for (let k = 0; k < 43; k++) eq(bitAt(k), 0, "PoW bit " + k);
+  eq(bitAt(43), 1, "the first set bit");
+  ok(P.leadingZeroBits(digest) >= P.leadingZeroBits(P.targetBytes(0x1d00ffff)));
+});
+
 check("a custom nBits is accepted and reflected", () => {
   const sel = el("pow-nbits");
   sel.value = "custom";

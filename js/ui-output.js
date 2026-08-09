@@ -35,6 +35,8 @@
     var elStats = document.getElementById("pow-stats");
     var elTarget = document.getElementById("pow-target");
     var elNote = document.getElementById("pow-note");
+    var elRaster = document.getElementById("digest-bit-raster");
+    var elRasterCaption = document.getElementById("digest-bit-caption");
 
     elShowBits.addEventListener("change", function () {
       cb.onShowDigestBits(elShowBits.checked);
@@ -112,6 +114,69 @@
       }
       elDigestBytes.innerHTML = html;
       elShowBits.checked = state.showDigestBits;
+    }
+
+    /**
+     * Where bit `k` of the proof-of-work value lives in the digest.
+     *
+     * k = 0 is the most significant bit of the whole 256-bit value, which is
+     * bit 7 of digest[31] — the top bit of the LAST byte SHA-256 emits.
+     * k = 255 is the least significant, bit 0 of digest[0].
+     *
+     * @returns {{byteIndex: number, bitInByte: number}}
+     */
+    function powBitLocation(k) {
+      return { byteIndex: 31 - (k >> 3), bitInByte: 7 - (k & 7) };
+    }
+
+    /**
+     * The 256-bit raster, in proof-of-work significance order.
+     *
+     * Thirty-two bits per row, so a row is four digest bytes and the grid
+     * lines up with the byte panel above it. The run of bits the target
+     * requires to be zero is shaded darker and terminated by a marker, which
+     * turns the difficulty check into something you can read off the shape:
+     * the black block has to reach the marker.
+     */
+    function renderBitRaster(state) {
+      var a = state.pow;
+      var d = state.analysis.digest;
+
+      /* The requirement is bit-granular, and it comes from the target rather
+       * than from the byte roles: a digest is over target the moment it has
+       * fewer leading zero bits than the target has. That boundary can fall
+       * inside a coefficient byte — for the mainnet example it lands six bits
+       * into byte 22, because the coefficient's top byte is 0x03. */
+      var required = P.leadingZeroBits(a.target);
+      var achieved = a.leadingZeroBits;
+
+      var html = "";
+      for (var k = 0; k < 256; k++) {
+        if (k % 32 === 0) {
+          html += '<div class="br-label">' + k + "</div>";
+        }
+        var loc = powBitLocation(k);
+        var bit = (d[loc.byteIndex] >> loc.bitInByte) & 1;
+        var role = a.roles[loc.byteIndex].role;
+
+        var cls = "br-bit " + role;
+        if (bit) cls += " on";
+        if (k < required) cls += " req";
+        if (k === required) cls += " boundary";
+
+        html += '<div class="' + cls + '" title="PoW bit ' + k +
+          " · digest byte " + loc.byteIndex + " bit " + loc.bitInByte +
+          " · value " + bit +
+          (k < required ? " · must be zero at this difficulty" : "") +
+          '"></div>';
+      }
+      elRaster.innerHTML = html;
+
+      var pass = achieved >= required;
+      elRasterCaption.innerHTML =
+        "<span>target needs ≥ " + required + " leading zero bits</span>" +
+        '<span class="n ' + (pass ? "pass" : "fail") + '">this digest has ' +
+        achieved + "</span>";
     }
 
     function renderPow(state) {
@@ -235,6 +300,7 @@
       }
 
       renderDigest(state);
+      renderBitRaster(state);
       renderPow(state);
     }
 

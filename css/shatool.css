@@ -549,6 +549,70 @@ button:active { background: #1a212a; }
 .db-cell.must-be-zero .db-bit.on { background: var(--pow-zero); }
 .db-cell.coefficient .db-bit.on { background: var(--pow-coeff); }
 
+/* The 256-bit raster, in proof-of-work significance order.
+ *
+ * Reading order is plain: left to right, top to bottom, most significant bit
+ * first — so a digest with the leading zeros a difficulty demands shows them
+ * as one solid black block starting at the top-left corner, and the question
+ * "is this hash small enough" becomes "does the black reach the marker".
+ *
+ * Off cells in the required-zero region are painted darker than off cells
+ * elsewhere, which is what makes that block read as a single shape rather
+ * than as texture. A 1 anywhere in that region is red, because a 1 there
+ * fails the check outright regardless of which byte it lands in. */
+
+.bit-raster {
+  display: grid;
+  grid-template-columns: 24px repeat(32, 1fr);
+  gap: 1px;
+  align-items: center;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 4px;
+}
+
+.br-label {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  color: var(--fg-faint);
+  text-align: right;
+  padding-right: 3px;
+  user-select: none;
+}
+
+.br-bit {
+  height: 9px;
+  border-radius: 1px;
+  background: #171c24;
+}
+
+/* Bit is 1: hue follows the same three roles used everywhere else in this
+ * panel, so a colour still means the same thing it does above. */
+.br-bit.on.tail         { background: #7d8899; }
+.br-bit.on.coefficient  { background: var(--pow-coeff); }
+.br-bit.on.must-be-zero { background: var(--pow-zero); }
+
+/* Inside the run the target requires to be zero. */
+.br-bit.req    { background: #04060a; }
+.br-bit.req.on { background: var(--pow-zero); }
+
+/* The first bit the target permits to be nonzero. */
+.br-bit.boundary { box-shadow: inset 2px 0 0 var(--accent); }
+
+.raster-caption {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  margin-top: 5px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.raster-caption .n { color: var(--fg); }
+.raster-caption .n.pass { color: var(--ok); }
+.raster-caption .n.fail { color: var(--bad); }
+
 .verdict {
   font-family: var(--mono);
   font-size: 12px;
