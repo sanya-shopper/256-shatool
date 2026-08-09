@@ -235,6 +235,14 @@
       var required = P.leadingZeroBits(a.target);
       var achieved = a.leadingZeroBits;
 
+      /* The best any sample in the current sampling session reached. -1 until
+       * a session has drawn something; the Reset button clears it. Marked on
+       * the raster as well as counted below it, because the distance between
+       * where the best got to and where the target sits is the whole story of
+       * a run, and it is far more legible as two marks than as two numbers. */
+      var session = state.search;
+      var sessionBest = session.attempts > 0 ? session.best : -1;
+
       for (var k = 0; k < 256; k++) {
         var loc = powBitLocation(k);
         var bit = (d[loc.byteIndex] >> loc.bitInByte) & 1;
@@ -242,18 +250,29 @@
         if (bit) cls += " on";
         if (k < required) cls += " req";
         if (k === required) cls += " boundary";
+        if (k === sessionBest) cls += " sess-best";
         var cell = rasterCells[k];
         if (cell.className !== cls) cell.className = cls;
         cell.title = "PoW bit " + k + " · digest byte " + loc.byteIndex +
           " bit " + loc.bitInByte + " · value " + bit +
-          (k < required ? " · must be zero at this difficulty" : "");
+          (k < required ? " · must be zero at this difficulty" : "") +
+          (k === sessionBest ? " · best this session reached here" : "");
       }
 
       var pass = achieved >= required;
-      elRasterCaption.innerHTML =
-        "<span>target needs ≥ " + required + " leading zero bits</span>" +
+      var html = '<div class="rc-row"><span>target needs ≥ ' + required +
+        " leading zero bits</span>" +
         '<span class="n ' + (pass ? "pass" : "fail") + '">this digest has ' +
-        achieved + "</span>";
+        achieved + "</span></div>";
+
+      if (sessionBest >= 0) {
+        var reached = sessionBest >= required;
+        html += '<div class="rc-row"><span>' + swatch("--warn") +
+          "best this sampling session</span>" +
+          '<span class="n ' + (reached ? "pass" : "") + '">' + sessionBest +
+          " in " + session.attempts.toLocaleString() + " samples</span></div>";
+      }
+      elRasterCaption.innerHTML = html;
     }
 
     function paintPow(state) {

@@ -1697,6 +1697,57 @@ check("a run stops by itself when the threshold is reached", () => {
   ok(zeros >= 5, "the digest left on screen must actually meet it: " + zeros);
 });
 
+check("the raster caption reports the session's best, and marks it", () => {
+  /* Runs after a completed sampling run, so there is a session to report. */
+  const caption = el("digest-bit-caption").innerHTML;
+  ok(/best this sampling session/.test(caption), caption);
+  const m = caption.match(/best this sampling session<\/span><span class="n[^"]*">(\d+) in ([\d,]+) samples/);
+  ok(m, "must give the count and the sample total: " + caption);
+
+  const best = Number(m[1]);
+  eq(Number(m[2].replace(/,/g, "")), sampleCount(),
+    "the sample total must agree with the counter beside it");
+
+  /* The run stopped on reaching the threshold, so the best is at least that
+   * and is also what the digest on screen shows. */
+  ok(best >= 5, "the run stopped at 5 zero bits, so the best is at least that");
+  eq(best, P.leadingZeroBits(hx(shownDigest())),
+    "the winning sample is the one left on screen, so it IS the best");
+
+  const marked = cellsIn("digest-bit-raster", "sess-best");
+  eq(marked.length, 1, "exactly one marker");
+  eq(Number(marked[0].title.match(/^PoW bit (\d+)/)[1]), best,
+    "the marker must sit at the best bit count");
+  ok(/best this session reached here/.test(marked[0].title));
+});
+
+check("the session best is absent before any sampling has happened", () => {
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+  const caption = el("digest-bit-caption").innerHTML;
+  ok(/target needs ≥/.test(caption), "the requirement is always shown");
+  ok(!/best this sampling session/.test(caption),
+    "but there is no session to report: " + caption);
+  eq(cellsIn("digest-bit-raster", "sess-best").length, 0, "and no marker");
+});
+
+check("the session best survives editing the message", () => {
+  /* It is a property of the sampling session, not of the digest on screen,
+   * so hand-editing a bit afterwards must not clear or move it. */
+  el("search-threshold").value = "4";
+  dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });
+  let frames = 0;
+  while (dom.pendingFrames() > 0 && frames < 40) { dom.pumpFrames(1); frames++; }
+
+  const before = el("digest-bit-caption").innerHTML
+    .match(/session<\/span><span class="n[^"]*">(\d+) in/)[1];
+  dom.fire(el("hex-grid"), "click", { target: bitCells()[0] });
+  const after = el("digest-bit-caption").innerHTML
+    .match(/session<\/span><span class="n[^"]*">(\d+) in/)[1];
+  eq(after, before, "an edit must not disturb the session record");
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+});
+
 check("reset clears the counters", () => {
   dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
   const stats = el("search-stats").innerHTML;

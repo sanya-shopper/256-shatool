@@ -616,14 +616,26 @@ button:active { background: #1a212a; }
 .br-bit.req    { background: #04060a; }
 .br-bit.req.on { background: var(--pow-zero); }
 
-/* The first bit the target permits to be nonzero. */
+/* Two markers, two meanings, kept apart by both colour and edge:
+ *   cyan on the LEFT edge  — the first bit the target permits to be nonzero
+ *   amber on the BOTTOM    — how far the best sample this session reached
+ * The gap between them is what a sampling run is trying to close. */
 .br-bit.boundary { box-shadow: inset 2px 0 0 var(--accent); }
+.br-bit.sess-best { box-shadow: inset 0 -2px 0 var(--warn); }
+.br-bit.boundary.sess-best {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 -2px 0 var(--warn);
+}
 
 .raster-caption {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--fg-dim);
   margin-top: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.raster-caption .rc-row {
   display: flex;
   justify-content: space-between;
   gap: 8px;
