@@ -75,7 +75,7 @@
     var prevAchieved = -1;
     var blow = null;            // {from, to, until, cls}
     var blowFlip = false;
-    var BLOW_MS = 460;
+    var BLOW_MS = 700;
     var nowMs = function () { return new Date().getTime(); };
 
     elShowBits.addEventListener("change", function () {
@@ -332,7 +332,11 @@
         elLzBadge.hidden = false;
         elLzBadge.textContent = achieved +
           (achieved === 1 ? " leading zero" : " leading zeros");
-        elLzBadge.className = "lz-badge" + (achieved >= required ? " pass" : "");
+        /* The badge bumps on the same alternating name as the cells, so the
+         * count and the burst are unmistakably the same event. */
+        elLzBadge.className = "lz-badge" +
+          (achieved >= required ? " pass" : "") +
+          (blow ? " " + blow.cls + "-bump" : "");
       } else {
         elLzBadge.hidden = true;
       }
