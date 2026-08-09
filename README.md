@@ -5,16 +5,16 @@ no server, no build step, no dependencies.
 
 ```sh
 open index.html          # macOS
-bash tests/run.sh        # 76 checks
+bash tests/run.sh        # 133 checks
 ```
 
 Three columns, left to right, following the data:
 
 | | |
 | --- | --- |
-| **Input** | the message in hex, every bit individually toggleable, plus what the padding turns it into |
-| **Computation** | one block's compression drawn as a bit raster: the schedule `W` and the two tracks `A` and `E`, one column per round |
-| **Output** | the digest, coloured by the part each byte plays in Bitcoin's proof-of-work difficulty check |
+| **Input** | the message in hex, every bit individually toggleable, what the padding turns it into, and two searches over it |
+| **Computation** | one block's compression drawn as bit rasters — the constants `K`, the schedule `W`, and the two tracks `A` and `E` — one column per round, with the chaining value below |
+| **Output** | the digest, coloured by the part each byte plays in Bitcoin's proof-of-work difficulty check, and the hardest difficulty it would have cleared |
 
 It starts on a random **513-bit** message. That length is awkward in three
 useful ways at once: it is not a multiple of 8, so the final byte carries one
@@ -43,10 +43,27 @@ history. Time runs left to right; a column is one round. Click a column to
 break that round out into its terms; hover any cell for its word and bit.
 
 **The visual grammar is fixed.** Hue says which track a cell belongs to —
-amber `W`, cyan `A`, violet `E`. Brightness says whether the bit is 1 or 0.
-Panel-background means "not computed", which happens past the round limit.
-The four columns left of the dashed rule are the seed window, taken from the
-incoming chaining value rather than produced by any round.
+green `K`, amber `W`, cyan `A`, violet `E`. Brightness says whether the bit is
+1 or 0. Panel-background means "not computed", which happens past the round
+limit. The four columns left of the dashed rule are the seed window, taken
+from the incoming chaining value rather than produced by any round.
+
+`K` never varies — it is the same 64 constants for every message and every
+block. It is drawn anyway, because seeing it makes a point the algebra
+buries: half of what feeds `T1` each round is fixed, and in diff mode the `K`
+band stays completely dark while everything below it lights up.
+
+**The chaining value** is shown as a strip under the canvas, tinted with the
+`A` and `E` hues because those eight words *are* the seed columns of those
+two tracks — `H[0]` seeds `A[-1]`, down to `H[3]` seeding `A[-4]`, and
+likewise `H[4..7]` into `E`. The seeding runs in reverse, which is the classic
+place to get SHA-256 wrong, so each word says which column it became.
+
+**Cells flash when their bit changes** and fade back over a few frames. That
+is what makes an edit legible as propagation rather than as a new picture:
+toggle one input bit and a handful of cells light in `W`, then a widening
+wedge through `A` and `E`. Respects `prefers-reduced-motion`, and there is an
+Animate checkbox.
 
 **Diff mode** switches the grammar wholesale, and the legend switches with it:
 pin a reference message, then toggle an input bit, and a lit cell now means
@@ -57,6 +74,38 @@ it is what the clickable input bits are for.
 diffusion completes. This is not SHA-256 and the tool does not pretend
 otherwise; it is there because reduced-round variants are what cryptanalysis
 actually studies.
+
+## Searching the input
+
+Two buttons on the left, both of which change the message and let the rest of
+the page react.
+
+**Sample** resamples one contiguous bit range — you type the start and end,
+inclusive — holding every other bit fixed, and stops when the digest shows
+enough leading zeros in proof-of-work order, or when you pause it. The range
+is outlined in the bit grid so you can see which part of the message is
+churning and which is being held. It draws a batch per animation frame and
+redraws after each, so every frame on screen is a point that was really
+sampled.
+
+That is mining, with two honest differences: a miner varies a 32-bit nonce in
+an 80-byte header and hashes it twice. The *shape* is the same, and the shape
+is the lesson — the target is cleared by luck alone, the expected cost doubles
+for every extra zero bit demanded, and nothing about the input can be steered
+toward it. The panel shows the attempt count next to the expected count for
+exactly that reason: one number alone cannot tell you whether a run is lucky,
+unlucky, or simply unfinished.
+
+**Best single flip** tries every one-bit change of the current message in turn
+and keeps whichever lowers the digest value most. It reports how far the value
+moved and whether any flip lowered it at all — on an already-small digest,
+none may, and it says so rather than implying progress.
+
+Since the baseline is the same for every candidate, the flip with the largest
+drop is simply the one producing the smallest digest; no 256-bit differences
+are needed to find it, only to report its size. Contrast this with Sample: a
+few hundred targeted hashes buy you one greedy step, and it is nothing like
+enough. Both buttons are pointed at the same wall.
 
 ## The output panel, and one fact worth the trouble
 
@@ -80,6 +129,25 @@ decoded `nBits` rather than hardcoded, so changing the difficulty moves them:
 - **coefficient** — compared against the three `nBits` coefficient bytes
 - **tail** — below the target's precision; only ever breaks an exact tie
 
+Below that, all 256 bits are drawn in significance order — 32 per row, most
+significant first, so PoW bit 0 is the top bit of `digest[31]`. The run the
+target requires to be zero is painted near-black and terminated by a marker,
+which turns the difficulty check into a shape question: **does the black reach
+the marker?** A set bit inside that run is red, since a 1 there fails outright.
+
+Note the requirement is bit-granular, not byte-granular. For the mainnet
+example it is 78 bits — nine whole zero bytes plus six bits into byte 22,
+because the coefficient's top byte is `0x03` — so the marker lands mid-row.
+
+**Hardest difficulty cleared**, at the bottom, turns the question around.
+Instead of "does this clear the difficulty you picked", it asks what the
+smallest target is that this digest still satisfies — which, since the check
+is `value <= target`, is the digest's own value. Reported in Bitcoin's usual
+units where 1 is the genesis block, so a random digest lands far below 1, and
+watching this number climb is what a sampling run is actually doing. The
+`nBits` it quotes rounds *up*: truncating into the three-byte compact form
+would name a target the digest does not in fact satisfy.
+
 ### What this is not
 
 Bitcoin hashes an 80-byte block header with SHA-256 applied **twice**. shatool
@@ -97,6 +165,7 @@ UI says so too, and a test asserts that it still does.
 | `css/shatool.css` | presentation only — the palette lives at the top |
 | `js/model.js` | message state, padding, traces. No DOM access |
 | `js/pow.js` | the Bitcoin reading of a digest. No DOM access |
+| `js/search.js` | sampling and the greedy single-flip scan. No DOM access |
 | `js/ui-input.js` `js/ui-canvas.js` `js/ui-output.js` | the three panels |
 | `js/app.js` | the only file that mutates state |
 | `js/vendor/shavar.js` | SHA-256, copied verbatim from `../shavar` |
@@ -110,7 +179,7 @@ names and custom properties and lets CSS decide what things look like.
 
 ## Correctness
 
-`bash tests/run.sh` — 76 checks, no dependencies.
+`bash tests/run.sh` — 133 checks, no dependencies.
 
 - The vendored SHA-256 is pinned by checksum and runs its own known-answer
   vectors, so a silent re-sync from `../shavar` fails here.
@@ -125,7 +194,12 @@ names and custom properties and lets CSS decide what things look like.
   digest is confirmed to *end* in the five zero bytes that the conventional
   display shows at the front.
 - The app is booted against the real `index.html` on a minimal DOM and driven
-  through every control.
+  through every control, including a sampling run pumped frame by frame.
+- The greedy flip is checked against an independent exhaustive search, and the
+  compact-`nBits` encoder against randomised values: its target must never
+  fall below the value it was encoded from.
+- Consistency both ways: every id the JS looks up exists in the markup, and
+  every id in the markup is used by JS or CSS.
 
 ### Known gap
 

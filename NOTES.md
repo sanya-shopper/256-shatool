@@ -89,6 +89,43 @@ from a `file://` URL with no server and no build step.
   "that name does not exist" and "that handler throws", and nothing at all
   about appearance.
 
+- **2026-08-09 — The output panel patches its cells; it does not rebuild
+  them.** Assigning `innerHTML` destroys every cell and creates new ones
+  already at their final colour, so CSS transitions never fire and the
+  animation silently does nothing. Structure is therefore built once and only
+  classes and text are patched. This is a constraint on that file, not a
+  preference: reintroducing an `innerHTML` assignment for the digest, the byte
+  grid or the raster would turn the animation off without any test noticing.
+
+- **2026-08-09 — The sampling range is stored twice: as requested and as
+  clamped.** `search.range` is what the user typed and is changed only by the
+  user; `search.window` is that range clamped to the current message and is
+  re-derived on every refresh. Clamping in place instead — which is what the
+  first version did — permanently collapsed a 400–500 range to a single bit
+  when the message was shrunk to 64 bits, and growing it back did not restore
+  it. The tests caught this.
+
+- **2026-08-09 — `encodeCompactCeil` rounds up, never truncates.** The compact
+  nBits form keeps three significant bytes, so truncating a digest into it
+  produces a target *below* that digest — an nBits the digest does not
+  actually satisfy. Rounding up is the only direction that keeps the claim
+  "this is the hardest difficulty it clears" true. A randomised test asserts
+  the encoded target is `>=` the value it came from across the top-byte and
+  carry paths.
+
+- **2026-08-09 — Finding the best single flip needs no subtraction.** The drop
+  from flipping bit *i* is `base − value(i)` and `base` is the same for every
+  candidate, so maximising the drop is exactly minimising the resulting
+  digest. 256-bit arithmetic is needed only to report how large the drop was,
+  not to find it. A test verifies this against an independent exhaustive
+  search rather than trusting the reasoning.
+
+- **2026-08-09 — Animation is capped and can be turned off.** A sampling run
+  changes roughly half of every word every frame, so an uncapped
+  full-canvas flash would strobe. The afterglow alpha tops out well short of
+  opaque, `prefers-reduced-motion` disables it entirely, and there is an
+  explicit Animate checkbox.
+
 ## Open questions
 
 - **No visual verification yet.** The tests prove the app boots, computes
@@ -125,3 +162,26 @@ from a `file://` URL with no server and no build step.
   about it.
 - One bug found by the tests during the build, in the tests themselves: the
   bit-cell selector counted locked cells, which carry `data-bit` too.
+- Added the 256-bit raster in proof-of-work order, so a difficulty
+  requirement reads as a shape: the black block has to reach the marker.
+- Added the K band, the chaining-value strip, range sampling, the greedy
+  single-flip search, the hardest-difficulty readout, and change animation.
+  133 checks.
+
+**Three bugs the tests caught during that round**, all worth recording
+because none would have been visible on screen as an error:
+
+1. The sampling range collapsed permanently when the message was shrunk and
+   regrown. Fixed by separating requested from clamped (see Decisions).
+2. `ui-output.js` created a `note-display` element that existed only in JS.
+   The id-consistency test flagged it; the fix moved three paragraphs of
+   English out of the renderer and into `index.html`, which is where they
+   belonged anyway.
+3. Two ids in `index.html` (`panel-input`, `panel-output`) were referenced by
+   nothing at all. Found by a new test asserting every id is used by either
+   JS or CSS — the reverse direction of the check that already existed.
+
+Also learned, and worth knowing before writing more animation: the canvas
+afterglow's decay frames share the `requestAnimationFrame` queue with the
+sampling loop, so "pump N frames" is not "run N rounds of sampling". Two
+tests initially asserted the latter and were wrong, not the code.
