@@ -694,14 +694,19 @@
           " is beyond the current round limit.</span>";
         return;
       }
+      /* Same order as the expanded equations under the legend: the terms
+       * carried in unchanged first, the computed ones last. */
       var items = [
-        ["W[" + t + "]", d.W], ["K[" + t + "]", d.K],
-        ["E[" + (t - 1) + "]", d.Ein[0]], ["Σ1(E[" + (t - 1) + "])", d.Sigma1],
-        ["Ch(E" + (t - 1) + "," + (t - 2) + "," + (t - 3) + ")", d.Ch],
-        ["E[" + (t - 4) + "]", d.Ein[3]],
-        ["A[" + (t - 1) + "]", d.Ain[0]], ["Σ0(A[" + (t - 1) + "])", d.Sigma0],
-        ["Maj(A" + (t - 1) + "," + (t - 2) + "," + (t - 3) + ")", d.Maj],
+        ["W[" + t + "]", d.W],
+        ["K[" + t + "]", d.K],
         ["A[" + (t - 4) + "]", d.Ain[3]],
+        ["E[" + (t - 4) + "]", d.Ein[3]],
+        ["E[" + (t - 1) + "]", d.Ein[0]],
+        ["Σ1(E[" + (t - 1) + "])", d.Sigma1],
+        ["Ch(E" + (t - 1) + "," + (t - 2) + "," + (t - 3) + ")", d.Ch],
+        ["A[" + (t - 1) + "]", d.Ain[0]],
+        ["Σ0(A[" + (t - 1) + "])", d.Sigma0],
+        ["Maj(A" + (t - 1) + "," + (t - 2) + "," + (t - 3) + ")", d.Maj],
       ];
       var out = [["T1", d.T1], ["T2", d.T2], ["A[" + t + "]", d.A], ["E[" + t + "]", d.E]];
 
@@ -716,8 +721,8 @@
           '</span><span class="val">' + hex8(it[1]) + "</span></div>";
       }).join("");
       html += "</div>";
-      html += '<div class="rd-eq">T1 = E[t-4] ⊞ Σ1(E[t-1]) ⊞ ' +
-        "Ch(E[t-1],E[t-2],E[t-3]) ⊞ K[t] ⊞ W[t] ··· " +
+      html += '<div class="rd-eq">T1 = W[t] ⊞ K[t] ⊞ E[t-4] ⊞ Σ1(E[t-1]) ⊞ ' +
+        "Ch(E[t-1],E[t-2],E[t-3]) ··· " +
         "T2 = Σ0(A[t-1]) ⊞ Maj(A[t-1],A[t-2],A[t-3]) ··· " +
         "E[t] = A[t-4] ⊞ T1 ··· A[t] = T1 ⊞ T2</div>";
       elDetail.innerHTML = html;

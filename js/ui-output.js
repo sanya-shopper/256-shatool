@@ -48,6 +48,7 @@
     var elNote = document.getElementById("pow-note");
     var elRaster = document.getElementById("digest-bit-raster");
     var elRasterCaption = document.getElementById("digest-bit-caption");
+    var elLzBadge = document.getElementById("lz-badge");
     var elBest = document.getElementById("pow-best");
 
     /* Persistent cell references, created by the build* functions below. */
@@ -131,7 +132,10 @@
 
     function buildRaster() {
       var cells = new Array(256);
+      /* textContent = "" would drop the badge, which is markup rather than a
+       * generated cell, so it is detached and put back around the rebuild. */
       elRaster.textContent = "";
+      elRaster.appendChild(elLzBadge);
       for (var k = 0; k < 256; k++) {
         if (k % 32 === 0) {
           var lab = document.createElement("div");
@@ -238,14 +242,33 @@
         var cls = "br-bit " + a.roles[loc.byteIndex].role;
         if (bit) cls += " on";
         if (k < required) cls += " req";
+        /* The leading zeros this digest actually has, as a filled block.
+         * Fill rather than an edge, because the two markers already on the
+         * raster use edges: a colour channel each, so none of the three can
+         * be mistaken for another. Where the green stops IS the count, and
+         * within the required run it separates the zeros already in hand
+         * from the ones still needed. */
+        if (k < achieved) cls += " lz-run";
         if (k === required) cls += " boundary";
         if (k === sessionBest) cls += " sess-best";
         var cell = rasterCells[k];
         if (cell.className !== cls) cell.className = cls;
         cell.title = "PoW bit " + k + " · digest byte " + loc.byteIndex +
           " bit " + loc.bitInByte + " · value " + bit +
+          (k < achieved ? " · inside this digest's leading zeros" : "") +
           (k < required ? " · must be zero at this difficulty" : "") +
           (k === sessionBest ? " · best this session reached here" : "");
+      }
+
+      /* The count, on the picture rather than only under it. Hidden at zero:
+       * a run of no length has nothing to label. */
+      if (achieved > 0) {
+        elLzBadge.hidden = false;
+        elLzBadge.textContent = achieved +
+          (achieved === 1 ? " leading zero" : " leading zeros");
+        elLzBadge.className = "lz-badge" + (achieved >= required ? " pass" : "");
+      } else {
+        elLzBadge.hidden = true;
       }
 
       var pass = achieved >= required;

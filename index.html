@@ -179,17 +179,26 @@ E[−1] = H[4]   E[−2] = H[5]   E[−3] = H[6]   E[−4] = H[7]</pre>
           later the H. It follows from <code>a = A[t−1], b = A[t−2],
           c = A[t−3], d = A[t−4]</code> read at <code>t = 0</code>.</p>
 
+        <p class="eq-note"><strong>Term order.</strong> Every sum below is
+          written with the plain terms first — the schedule word, the round
+          constant, and whichever earlier A or E enters unchanged — and the
+          compound expressions last. Addition modulo 2³² is commutative and
+          associative, so the order is a presentation choice and nothing
+          more; it is chosen so each line starts with what is simply carried
+          in and ends with what is computed.</p>
+
         <p class="eq-head">The round, as usually written</p>
-        <pre>T1[t] = E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3]) ⊞ K[t] ⊞ W[t]
+        <pre>T1[t] = W[t] ⊞ K[t] ⊞ E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3])
 T2[t] = Σ0(A[t−1]) ⊞ Maj(A[t−1],A[t−2],A[t−3])
 E[t]  = A[t−4] ⊞ T1[t]
 A[t]  = T1[t] ⊞ T2[t]</pre>
 
         <p class="eq-head">With T1 and T2 substituted out</p>
-        <pre>E[t] = A[t−4] ⊞ E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3])
-              ⊞ K[t] ⊞ W[t]
+        <pre>E[t] = W[t] ⊞ K[t] ⊞ A[t−4] ⊞ E[t−4]
+              ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3])
 
-A[t] = E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3]) ⊞ K[t] ⊞ W[t]
+A[t] = W[t] ⊞ K[t] ⊞ E[t−4]
+              ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3])
               ⊞ Σ0(A[t−1]) ⊞ Maj(A[t−1],A[t−2],A[t−3])</pre>
         <p class="eq-note">The two differ by exactly two terms: E takes
           <code>A[t−4]</code>, A takes <code>Σ0 ⊞ Maj</code>. That single
@@ -197,30 +206,31 @@ A[t] = E[t−4] ⊞ Σ1(E[t−1]) ⊞ Ch(E[t−1],E[t−2],E[t−3]) ⊞ K[t] �
           track in the whole function.</p>
 
         <p class="eq-head">With the named functions substituted out too</p>
-        <pre>E[t] = A[t−4]
+        <pre>E[t] = W[t]
+     ⊞ K[t]
+     ⊞ A[t−4]
      ⊞ E[t−4]
      ⊞ (ROTR⁶(E[t−1]) ⊕ ROTR¹¹(E[t−1]) ⊕ ROTR²⁵(E[t−1]))
      ⊞ ((E[t−1] ∧ E[t−2]) ⊕ (¬E[t−1] ∧ E[t−3]))
-     ⊞ K[t]
-     ⊞ W[t]
 
-A[t] = E[t−4]
+A[t] = W[t]
+     ⊞ K[t]
+     ⊞ E[t−4]
      ⊞ (ROTR⁶(E[t−1]) ⊕ ROTR¹¹(E[t−1]) ⊕ ROTR²⁵(E[t−1]))
      ⊞ ((E[t−1] ∧ E[t−2]) ⊕ (¬E[t−1] ∧ E[t−3]))
-     ⊞ K[t]
-     ⊞ W[t]
      ⊞ (ROTR²(A[t−1]) ⊕ ROTR¹³(A[t−1]) ⊕ ROTR²²(A[t−1]))
      ⊞ ((A[t−1] ∧ A[t−2]) ⊕ (A[t−1] ∧ A[t−3]) ⊕ (A[t−2] ∧ A[t−3]))</pre>
         <p class="eq-note">Nothing is hidden in a name any more. Every round
           is these two sums, and the whole of SHA-256's compression is running
-          them for <code>t = 0 … 63</code>.</p>
+          them for <code>t = 0 … 63</code>. The first four lines of each are
+          carried in unchanged; only the last two or four do any mixing.</p>
 
         <p class="eq-head">The message schedule</p>
         <pre>W[t] = the block's t-th 32-bit word, big-endian            0 ≤ t &lt; 16
 
 W[t] = W[t−16]
-     ⊞ (ROTR⁷(W[t−15]) ⊕ ROTR¹⁸(W[t−15]) ⊕ SHR³(W[t−15]))
      ⊞ W[t−7]
+     ⊞ (ROTR⁷(W[t−15]) ⊕ ROTR¹⁸(W[t−15]) ⊕ SHR³(W[t−15]))
      ⊞ (ROTR¹⁷(W[t−2]) ⊕ ROTR¹⁹(W[t−2]) ⊕ SHR¹⁰(W[t−2]))   16 ≤ t &lt; 64</pre>
         <p class="eq-note">The schedule depends only on the block, never on
           the chaining value — which is why the W band looks the same whatever
@@ -279,7 +289,7 @@ H′[6] = H[6] ⊞ E[61]   H′[7] = H[7] ⊞ E[60]</pre>
     <div class="field">
       <div class="field-label">All 256 bits, most significant first
         <span class="muted">(the order the target is compared in)</span></div>
-      <div id="digest-bit-raster" class="bit-raster"></div>
+      <div id="digest-bit-raster" class="bit-raster"><span id="lz-badge" class="lz-badge" hidden></span></div>
       <div id="digest-bit-caption" class="raster-caption"></div>
     </div>
 

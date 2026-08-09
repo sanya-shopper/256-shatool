@@ -1890,7 +1890,69 @@ check("the required-zero run matches the target's leading zeros", () => {
   }
 });
 
+check("the digest's own leading zeros are marked and counted in the raster", () => {
+  const achieved = P.leadingZeroBits(hx(shownDigest()));
+  const run = cellsIn("digest-bit-raster", "lz-run");
+  eq(run.length, achieved, "one marked cell per leading zero");
+
+  /* It must be a prefix — the run starts at bit 0 and stops at the first 1 —
+   * or the block on screen is not the leading zeros it claims to be. */
+  const cells = rasterCells();
+  for (let k = 0; k < 256; k++) {
+    eq(cells[k].classList.contains("lz-run"), k < achieved, "bit " + k);
+  }
+  /* And every marked cell must really be zero. */
+  for (const c of run) ok(/· value 0/.test(c.title), c.title);
+
+  const badge = el("lz-badge");
+  if (achieved === 0) {
+    eq(badge.hidden, true, "nothing to label at zero");
+  } else {
+    eq(badge.hidden, false);
+    eq(badge.textContent,
+      achieved + (achieved === 1 ? " leading zero" : " leading zeros"));
+  }
+});
+
+check("the marked run tracks the digest as it changes", () => {
+  /* Driven to a digest with a known, non-trivial number of leading zeros so
+     the marking is exercised at more than whatever a random digest gives. */
+  setNbits(256);
+  setRange(0, 63);
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+  el("search-threshold").value = "6";
+  dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
+  el("search-rate").value = "4000";
+  dom.fire(el("search-rate"), "change", { target: el("search-rate") });
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });
+  let frames = 0;
+  while (dom.pendingFrames() > 0 && frames < 60) { dom.pumpFrames(1); frames++; }
+
+  const achieved = P.leadingZeroBits(hx(shownDigest()));
+  ok(achieved >= 6, "the run should have reached the threshold: " + achieved);
+  eq(cellsIn("digest-bit-raster", "lz-run").length, achieved);
+  eq(el("lz-badge").textContent, achieved + " leading zeros");
+  ok(el("lz-badge").className.indexOf("pass") < 0,
+    "six zeros does not clear a mainnet target, so no pass styling");
+});
+
+check("the badge marks a pass when the run reaches the requirement", () => {
+  const achieved = P.leadingZeroBits(hx(shownDigest()));
+  ok(achieved >= 6);
+  /* A target whose top byte is nonzero, so it demands no leading zeros at
+     all and any digest clears it. Checked, not assumed. */
+  eq(P.leadingZeroBits(P.targetBytes(0x2100ffff)), 0);
+  setNBits("0x2100ffff");
+  ok(el("lz-badge").className.indexOf("pass") >= 0,
+    "cleared: " + el("lz-badge").className);
+  setNBits("0x17034a3f");
+  ok(el("lz-badge").className.indexOf("pass") < 0);
+  /* Leave no sampling session behind for the tests that follow. */
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+});
+
 check("exactly one boundary marker, at the end of the required run", () => {
+  setNBits("0x1d00ffff");
   const marked = cellsIn("digest-bit-raster", "boundary");
   eq(marked.length, 1);
   eq(marked[0].title.match(/^PoW bit (\d+)/)[1], "32",
@@ -1944,6 +2006,7 @@ check("the output panel states the single-vs-double hashing caveat", () => {
 });
 
 check("randomize and zero both work from the buttons", () => {
+  setNbits(24);
   dom.fire(el("btn-clear"), "click", { target: el("btn-clear") });
   eq(/^0+$/.test(el("input-hex").value), true, "zeroed");
   eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 24));
@@ -2099,6 +2162,7 @@ check("starting a run schedules frames and shows it is running", () => {
      window on its last 64 bits, so the byte arithmetic below is explicit. */
   setNbits(513);
   setRange(449, 512);
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
   el("search-threshold").value = "200";        // unreachable, so it will not stop
   dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
   el("search-rate").value = "5";

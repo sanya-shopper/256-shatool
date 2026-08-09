@@ -588,6 +588,7 @@ button:active { background: #1a212a; }
  * fails the check outright regardless of which byte it lands in. */
 
 .bit-raster {
+  position: relative;
   display: grid;
   grid-template-columns: 24px repeat(32, 1fr);
   gap: 1px;
@@ -622,6 +623,32 @@ button:active { background: #1a212a; }
 /* Inside the run the target requires to be zero. */
 .br-bit.req    { background: #04060a; }
 .br-bit.req.on { background: var(--pow-zero); }
+
+/* The leading zeros this digest actually has. Filled, where the target
+ * boundary and the session best are edges — one channel each, so the three
+ * never read as the same thing. Inside the required run this is the visible
+ * split between the zeros in hand and the ones still needed; the point where
+ * the green stops is the count. */
+.br-bit.lz-run { background: rgba(95, 194, 126, 0.30); }
+
+/* The count itself, on the picture. Bottom right, over the least significant
+ * bits, which are the ones nothing else is trying to say anything about. */
+.lz-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(10, 13, 18, 0.88);
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.lz-badge.pass { color: var(--ok); border-color: rgba(95, 194, 126, 0.5); }
 
 /* Two markers, two meanings, kept apart by both colour and edge:
  *   cyan on the LEFT edge  — the first bit the target permits to be nonzero
