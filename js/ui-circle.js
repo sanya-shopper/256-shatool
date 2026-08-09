@@ -76,6 +76,7 @@
     var canvas = document.getElementById("circle-canvas");
     var stats = document.getElementById("circle-stats");
     var resetBtn = document.getElementById("circle-reset");
+    var showBox = document.getElementById("chk-circle");
 
     var ctx = canvas.getContext("2d");
 
@@ -93,6 +94,9 @@
     // Wiring
     // ---------------------------------------------------------------
 
+    showBox.addEventListener("change", function () {
+      cb.onShowCircle(showBox.checked);
+    });
     toggle.addEventListener("click", function () { cb.onToggleCircle(); });
     resetBtn.addEventListener("click", function () {
       trail = [];
@@ -281,6 +285,14 @@
 
     function render(state) {
       lastState = state;
+      showBox.checked = state.circleVisible;
+      pane.hidden = !state.circleVisible;
+      /* Nothing to compute while it is not on screen, and — more to the
+       * point — no trail to accumulate. A hidden pane must not quietly build
+       * a history of positions nobody watched and then show it all at once
+       * when it is switched on. */
+      if (!state.circleVisible) return;
+
       pane.classList.toggle("collapsed", !state.circleOpen);
       toggle.textContent = state.circleOpen ? "▾" : "▸";
       body.hidden = !state.circleOpen;

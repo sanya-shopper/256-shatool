@@ -12,6 +12,11 @@
   <h1>shatool</h1>
   <p class="tagline">the interior of SHA-256, one bit at a time</p>
   <div class="topbar-spacer"></div>
+  <label class="checkline topbar-check"
+         title="A floating pane showing the digest as a point on the 256-bit value circle, with wraps through zero marked">
+    <input type="checkbox" id="chk-circle">
+    <span>Value circle</span>
+  </label>
   <div class="topbar-readout">
     <span class="k">message</span>
     <span class="v" id="stat-nbits">— bits</span>
@@ -325,7 +330,7 @@ H′[6] = H[6] ⊞ E[61]   H′[7] = H[7] ⊞ E[60]</pre>
 
 <!-- Floating value-circle pane. Outside <main> so it can hover over any
      column; positioned by CSS and moved by dragging its header. -->
-<aside id="circle-pane">
+<aside id="circle-pane" hidden>
   <div id="circle-header">
     <button type="button" id="circle-toggle" aria-label="collapse">▾</button>
     <span class="circle-title">Value circle</span>

@@ -2576,6 +2576,41 @@ check("pausing with nothing sampled leaves the message alone", () => {
   eq(el("input-hex").value, before, "no samples drawn, so nothing to rewind to");
 });
 
+check("the value circle is hidden until its checkbox is set", () => {
+  eq(el("chk-circle").checked, false, "off by default");
+  eq(el("circle-pane").hidden, true, "and the pane is not on screen");
+  eq(el("circle-stats").innerHTML, "", "nor has it drawn anything");
+});
+
+check("checking the box shows the pane and starts it drawing", () => {
+  el("chk-circle").checked = true;
+  dom.fire(el("chk-circle"), "change", { target: el("chk-circle") });
+  eq(el("circle-pane").hidden, false);
+  ok(/position/.test(el("circle-stats").innerHTML), el("circle-stats").innerHTML);
+  ok(/wraps through 0/.test(el("circle-stats").innerHTML));
+});
+
+check("the pane collapses without being hidden", () => {
+  dom.fire(el("circle-toggle"), "click", { target: el("circle-toggle") });
+  eq(el("circle-body").hidden, true, "the body folds away");
+  eq(el("circle-pane").hidden, false, "but the pane stays on screen");
+  dom.fire(el("circle-toggle"), "click", { target: el("circle-toggle") });
+  eq(el("circle-body").hidden, false);
+});
+
+check("unchecking the box hides it again", () => {
+  el("chk-circle").checked = false;
+  dom.fire(el("chk-circle"), "change", { target: el("chk-circle") });
+  eq(el("circle-pane").hidden, true);
+  /* And a hidden pane must not keep accumulating a trail behind the user's
+   * back: editing the message while it is off must not queue up positions
+   * that all appear at once when it is switched back on. */
+  const before = el("circle-stats").innerHTML;
+  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+  dom.fire(el("btn-randomize"), "click", { target: el("btn-randomize") });
+  eq(el("circle-stats").innerHTML, before, "nothing drawn while hidden");
+});
+
 check("the hardest-difficulty panel reports a difficulty and an nBits", () => {
   const best = el("pow-best").innerHTML;
   ok(/difficulty /.test(best), best);

@@ -115,6 +115,7 @@ body {
 }
 
 .tagline { margin: 0; color: var(--fg-faint); font-size: 12px; }
+.topbar-check { font-size: 12px; margin-right: 14px; }
 .topbar-spacer { flex: 1 1 auto; }
 
 .topbar-readout {
@@ -817,6 +818,8 @@ button:active { background: #1a212a; }
  * it to top/left. Kept above the panels but below nothing else, since it is
  * the only floating thing on the page.
  */
+
+#circle-pane[hidden] { display: none; }
 
 #circle-pane {
   position: fixed;

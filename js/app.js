@@ -83,7 +83,9 @@
     /** Width for the general "best n-bit flip" control. */
     flipN: 3,
 
-    /** Whether the floating value-circle pane is expanded. */
+    /** Whether the floating value-circle pane is on screen at all. */
+    circleVisible: false,
+    /** Whether it is expanded rather than collapsed to its title bar. */
     circleOpen: true,
 
     /** Whether to classify every bit by its effect on the leading zeros. */
@@ -446,6 +448,11 @@
     },
 
     onCancelScan: function () { cancelFlipScan(); render(); },
+
+    onShowCircle: function (v) {
+      state.circleVisible = v;
+      render();
+    },
 
     onToggleCircle: function () {
       state.circleOpen = !state.circleOpen;
