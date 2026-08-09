@@ -64,16 +64,38 @@
       rate: 500,          // samples per animation frame
       attempts: 0,
       best: -1,
+      /** The best sample's message bytes, so a pause can rewind to it. */
+      bestBytes: null,
+      bestNbits: -1,
+      /** Set when a pause rewound the message, so the UI can say so. */
+      rewound: false,
       found: false,
       startedAt: 0,
       rate2: 0,           // measured samples per second
     },
 
-    /** Result of the last flip scan, single or pair, or null. */
+    /** Result of the last flip scan, of whatever width, or null. */
     flip: null,
 
-    /** Progress of a running pair scan, or null when none is running. */
-    pairProgress: null,
+    /** Progress of a running flip scan, or null when none is running. */
+    flipProgress: null,
+
+    /** Width for the general "best n-bit flip" control. */
+    flipN: 3,
+
+    /** Whether to classify every bit by its effect on the leading zeros. */
+    showNeutral: false,
+    /** The classification itself, recomputed by refresh() when enabled. */
+    neutral: null,
+
+    /**
+     * Measured hashes per second on this machine, used to turn a combination
+     * count into an estimate a person can act on. Measured rather than
+     * assumed because the counts span nine orders of magnitude and the
+     * difference between "twenty seconds" and "twenty minutes" is the whole
+     * decision.
+     */
+    hashRate: 0,
 
     error: null,
   };
@@ -107,6 +129,9 @@
     if (state.selectedRound !== null && state.selectedRound >= state.rounds) {
       state.selectedRound = null;
     }
+
+    /* One hash per input bit, so this is only computed when asked for. */
+    state.neutral = state.showNeutral ? Q.leadingZeroDeltaMap(state.msg) : null;
 
     /* The diff is against the same block index of the reference message. If
      * the reference is shorter and has no such block there is nothing to
@@ -270,7 +295,11 @@
     });
 
     s.attempts += res.attempts;
-    if (res.bestBits > s.best) s.best = res.bestBits;
+    if (res.bestBits > s.best) {
+      s.best = res.bestBits;
+      s.bestBytes = res.bestBytes;
+      s.bestNbits = state.msg.nbits;
+    }
 
     var elapsed = (now() - s.startedAt) / 1000;
     s.rate2 = elapsed > 0 ? Math.round(s.attempts / elapsed) : 0;
@@ -294,6 +323,7 @@
     if (state.msg.nbits === 0) return;
     s.running = true;
     s.found = false;
+    s.rewound = false;
     /* Restart the clock but keep the counters: a pause and resume is one run
      * as far as the attempt total is concerned, and resetting is a separate
      * button. */
@@ -302,9 +332,33 @@
     rafId = raf(searchFrame);
   }
 
+  /**
+   * Stop a sampling run and rewind to the best sample it found.
+   *
+   * A run left standing wherever it happened to be interrupted throws away
+   * everything it achieved: the last sample drawn is just another random
+   * point, and the good one — the reason the run was worth watching — is
+   * gone. So pausing restores the best sample's bytes.
+   *
+   * Only when the sampler was actually running, so that the incidental
+   * stopSearch() calls made before starting a flip scan do not rewind a
+   * message nobody was sampling. And only when the best was recorded at the
+   * current message length, since a resize in between makes those bytes a
+   * different message.
+   */
   function stopSearch() {
-    state.search.running = false;
+    var s = state.search;
+    var wasRunning = s.running;
+    s.running = false;
     if (rafId !== null) { caf(rafId); rafId = null; }
+
+    if (wasRunning && s.bestBytes && s.bestNbits === state.msg.nbits &&
+        s.bestBytes.length === state.msg.bytes.length) {
+      state.msg.bytes.set(s.bestBytes);
+      s.rewound = true;
+      refresh();
+      return;
+    }
     render();
   }
 
@@ -333,15 +387,13 @@
       var s = state.search;
       s.attempts = 0;
       s.best = -1;
+      s.bestBytes = null;
+      s.bestNbits = -1;
+      s.rewound = false;
       s.found = false;
       s.rate2 = 0;
       state.flip = null;
-      /* A pair scan in flight is abandoned too: its cursor is discarded and
-       * the message is already whole, because the scan restores it after
-       * every individual pair rather than only at the end. */
-      if (pairRaf !== null) { caf(pairRaf); pairRaf = null; }
-      pairScan = null;
-      state.pairProgress = null;
+      cancelFlipScan();
       render();
     },
     onBestFlip: function () {
@@ -353,33 +405,33 @@
       var before = P.leadingZeroBits(state.analysis.digest);
       var res = Q.bestSingleFlip(state.msg);
       if (!res) { state.flip = null; refresh(); return; }
-      state.flip = flipResult("single", [res.index], res, before);
+      state.flip = flipResult(res, before);
       refresh();
     },
 
-    onBestPair: function () {
-      /* Not synchronous. There are n(n-1)/2 pairs — 131,328 for the default
-       * message — so a full scan is over a second of solid hashing. Run in
-       * one go it would freeze the page and show nothing while it did, so it
-       * is spread across animation frames with a progress readout. */
-      if (pairScan) return;
-      stopSearch();
-      if (state.msg.nbits < 2) return;
-      pairScan = {
-        scan: Q.createPairScan(state.msg),
-        zerosBefore: P.leadingZeroBits(state.analysis.digest),
-      };
-      state.pairProgress = { tested: 0, total: pairScan.scan.total };
+    onBestPair: function () { startFlipScan(2); },
+
+    onBestN: function () { startFlipScan(state.flipN); },
+
+    onSetFlipN: function (n) {
+      if (!Number.isInteger(n) || n < 1 || n > 8) return;
+      state.flipN = n;
       render();
-      pairRaf = raf(pairFrame);
+    },
+
+    onCancelScan: function () { cancelFlipScan(); render(); },
+
+    onShowNeutral: function (v) {
+      state.showNeutral = v;
+      refresh();
     },
   };
 
-  /** Normalise either flip scan's result into what the UI displays. */
-  function flipResult(kind, indices, res, zerosBefore) {
+  /** Normalise a flip scan's result into what the UI displays. */
+  function flipResult(res, zerosBefore) {
     return {
-      kind: kind,
-      indices: indices,
+      n: res.n,
+      indices: res.indices,
       tested: res.tested,
       improved: res.improved,
       log2Delta: res.log2Delta,
@@ -388,39 +440,108 @@
     };
   }
 
-  /* Pairs scanned between redraws. Chosen so a frame's work stays in the
+  /* Combinations tried between redraws. Chosen so a frame's work stays in the
    * region of ten milliseconds, which keeps the progress readout moving
    * smoothly without making the scan take noticeably longer overall. */
-  var PAIR_BUDGET = 3000;
-  var pairScan = null;
-  var pairRaf = null;
+  var SCAN_BUDGET = 3000;
 
-  function pairFrame() {
-    pairRaf = null;
-    if (!pairScan) return;
+  /* Below this, a scan finishes inside one frame anyway and staging it would
+   * only add a frame of latency and a progress bar nobody sees. */
+  var SYNC_LIMIT = 20000;
 
-    var progress = pairScan.scan.step(PAIR_BUDGET);
-    state.pairProgress = {
+  var flipScan = null;
+  var flipRaf = null;
+
+  /**
+   * Begin (or immediately complete) a scan of `n`-bit flips.
+   *
+   * Small scans run synchronously; large ones are spread across frames. The
+   * caller does not choose which — the combination count does — so the same
+   * button behaves sensibly whether the message is 24 bits or 513.
+   */
+  function startFlipScan(n) {
+    if (flipScan) return;
+    stopSearch();
+    if (state.msg.nbits < n) return;
+
+    var scan = Q.createFlipScan(state.msg, n);
+    if (scan.total === 0) return;
+
+    var zerosBefore = P.leadingZeroBits(state.analysis.digest);
+
+    if (scan.total <= SYNC_LIMIT) {
+      scan.step(scan.total);
+      var res = scan.apply();
+      state.flip = res ? flipResult(res, zerosBefore) : null;
+      refresh();
+      return;
+    }
+
+    flipScan = { scan: scan, zerosBefore: zerosBefore, startedAt: now() };
+    state.flipProgress = {
+      n: n, tested: 0, total: scan.total, bestIndices: null, etaSeconds: null,
+    };
+    render();
+    flipRaf = raf(flipFrame);
+  }
+
+  function cancelFlipScan() {
+    if (flipRaf !== null) { caf(flipRaf); flipRaf = null; }
+    /* Nothing to undo: the scan restores the message after every individual
+     * combination, so abandoning it mid-step leaves nothing half-applied. */
+    flipScan = null;
+    state.flipProgress = null;
+  }
+
+  function flipFrame() {
+    flipRaf = null;
+    if (!flipScan) return;
+
+    var progress = flipScan.scan.step(SCAN_BUDGET);
+    var elapsed = (now() - flipScan.startedAt) / 1000;
+    var rate = elapsed > 0 ? progress.tested / elapsed : 0;
+
+    state.flipProgress = {
+      n: progress.n,
       tested: progress.tested,
       total: progress.total,
-      bestI: progress.bestI,
-      bestJ: progress.bestJ,
+      bestIndices: progress.bestIndices,
+      etaSeconds: rate > 0 ? (progress.total - progress.tested) / rate : null,
     };
 
     if (!progress.done) {
       render();
-      pairRaf = raf(pairFrame);
+      flipRaf = raf(flipFrame);
       return;
     }
 
     /* Finished: apply the winner and let the ordinary render path animate the
-     * change, exactly as it does for a single flip. */
-    var zerosBefore = pairScan.zerosBefore;
-    var res = pairScan.scan.apply();
-    pairScan = null;
-    state.pairProgress = null;
-    state.flip = res ? flipResult("pair", res.indices, res, zerosBefore) : null;
+     * change, exactly as it does for a hand edit. */
+    var zerosBefore = flipScan.zerosBefore;
+    var res = flipScan.scan.apply();
+    flipScan = null;
+    state.flipProgress = null;
+    state.flip = res ? flipResult(res, zerosBefore) : null;
     refresh();
+  }
+
+  /**
+   * Measure this machine's hashing rate once, at startup.
+   *
+   * Ten milliseconds of real hashing, which is imperceptible at load and is
+   * what turns "22,369,536 combinations" into "about three and a half
+   * minutes" — the form of the number anyone can actually decide on.
+   */
+  function calibrate() {
+    var probe = M.randomize(M.createMessage(512));
+    var t0 = now();
+    var n = 0;
+    while (now() - t0 < 10) {
+      for (var i = 0; i < 200; i++) root.SHAVAR.hashEx(probe.bytes, probe.nbits);
+      n += 200;
+    }
+    var elapsed = (now() - t0) / 1000;
+    return elapsed > 0 ? Math.round(n / elapsed) : 0;
   }
 
   // -------------------------------------------------------------------
@@ -434,6 +555,7 @@
 
     var w0 = Q.defaultWindow(state.msg.nbits, Q.WINDOW_BITS);
     state.search.range = { start: w0.start, end: Q.windowEnd(w0) };
+    state.hashRate = calibrate();
 
     /* ui-input owns the sampling controls as well as the message editor,
      * because both of them change the input. The two callback sets are merged

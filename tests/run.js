@@ -850,7 +850,7 @@ check("bestSingleFlip picks the flip giving the smallest digest", () => {
   }
 
   const r = Q.bestSingleFlip(msg);
-  eq(r.index, bestIdx);
+  eq(r.indices, [bestIdx]);
   eq(r.tested, 64);
   eq(S.bytesToHex(r.after), S.bytesToHex(bestDigest));
 });
@@ -866,7 +866,7 @@ check("the message is left with exactly the winning bit flipped", () => {
     const b = i >> 3, mask = 1 << (7 - (i & 7));
     if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
   }
-  eq(differing, [r.index], "exactly one bit should differ, the winner");
+  eq(differing, r.indices, "exactly one bit should differ, the winner");
   eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.after),
     "and the message must hash to the digest that was reported");
 });
@@ -886,14 +886,14 @@ check("the reported drop is the exact difference between the two digests", () =>
 check("bestSingleFlip is deterministic — the same input gives the same bit", () => {
   const a = M.createMessage(64); M.setMessageHex(a, "0123456789abcdef");
   const b = M.createMessage(64); M.setMessageHex(b, "0123456789abcdef");
-  eq(Q.bestSingleFlip(a).index, Q.bestSingleFlip(b).index);
+  eq(Q.bestSingleFlip(a).indices[0], Q.bestSingleFlip(b).indices[0]);
 });
 
 check("bestSingleFlip works on a sub-byte message", () => {
   const msg = M.randomize(M.createMessage(513));
   const r = Q.bestSingleFlip(msg);
   eq(r.tested, 513);
-  ok(r.index >= 0 && r.index < 513);
+  ok(r.indices[0] >= 0 && r.indices[0] < 513);
   S.checkTrailingBits(msg.bytes, msg.nbits);
   eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(r.after));
 });
@@ -908,7 +908,7 @@ group("search: the best pair of bit flips");
 
 /** Run a pair scan to completion in `budget`-sized steps. */
 function runPairScan(msg, budget) {
-  const scan = Q.createPairScan(msg);
+  const scan = Q.createFlipScan(msg, 2);
   let guard = 0;
   let last;
   do {
@@ -932,7 +932,7 @@ check("a pair scan visits every distinct unordered pair, once", () => {
   const n = 12;
   const msg = M.createMessage(n);
   const seen = new Set();
-  const scan = Q.createPairScan(msg);
+  const scan = Q.createFlipScan(msg, 2);
   /* Re-derive the visit order from the cursor's own contract: step one pair
    * at a time and note the best-so-far indices whenever they move. */
   let count = 0;
@@ -943,8 +943,9 @@ check("a pair scan visits every distinct unordered pair, once", () => {
   eq(count, (n * (n - 1)) / 2, "one step per pair, and no more");
   eq(r.tested, (n * (n - 1)) / 2);
   /* The pair the scan settled on must be a legal unordered pair. */
-  ok(r.bestI >= 0 && r.bestJ > r.bestI && r.bestJ < n);
-  seen.add(r.bestI + "," + r.bestJ);
+  ok(r.bestIndices[0] >= 0 && r.bestIndices[1] > r.bestIndices[0] &&
+     r.bestIndices[1] < n);
+  seen.add(r.bestIndices.join(","));
   eq(seen.size, 1);
 });
 
@@ -953,7 +954,7 @@ check("the message is intact between steps, not only at the end", () => {
    * renders mid-scan must see the original message. */
   const msg = M.randomize(M.createMessage(64));
   const before = Array.from(msg.bytes);
-  const scan = Q.createPairScan(msg);
+  const scan = Q.createFlipScan(msg, 2);
   for (let i = 0; i < 6; i++) {
     scan.step(50);
     eq(Array.from(msg.bytes), before, "message must be restored after step " + i);
@@ -1024,7 +1025,7 @@ check("a pair scan works on a sub-byte message and keeps it legal", () => {
 
 check("a message too short to have a pair scans to zero and applies nothing", () => {
   for (const n of [0, 1]) {
-    const scan = Q.createPairScan(M.createMessage(n));
+    const scan = Q.createFlipScan(M.createMessage(n), 2);
     eq(scan.total, 0);
     eq(scan.step(10).done, true);
     eq(scan.apply(), null);
@@ -1057,10 +1058,201 @@ check("pairs are not a superset of singles, and the code does not assume so", ()
   const pairRes = runPairScan(pair, 500).scan.apply();
 
   eq(pairRes.indices.length, 2);
-  ok(singleRes.index >= 0);
+  ok(singleRes.indices.length === 1);
   /* Whichever wins, each must be internally consistent. */
   eq(S.hashHex(single.bytes, 24), S.bytesToHex(singleRes.after));
   eq(S.hashHex(pair.bytes, 24), S.bytesToHex(pairRes.after));
+});
+
+// ---------------------------------------------------------------------
+group("search: n-bit flips and their cost");
+// ---------------------------------------------------------------------
+
+check("combinations matches C(m,n) on known values", () => {
+  eq(Q.combinations(513, 1), 513);
+  eq(Q.combinations(513, 2), 131328);
+  eq(Q.combinations(513, 3), 22369536);
+  eq(Q.combinations(64, 3), 41664);
+  eq(Q.combinations(5, 5), 1);
+  eq(Q.combinations(5, 0), 1);
+  eq(Q.combinations(5, 6), 0, "more bits than the message has");
+  eq(Q.combinations(0, 1), 0);
+});
+
+check("combinations saturates instead of overflowing", () => {
+  ok(Q.combinations(4096, 2000) === Infinity, "must not wrap or go NaN");
+  ok(isFinite(Q.combinations(513, 4)), "2.8 billion still fits a double");
+});
+
+check("estimateSeconds turns a count into time at a measured rate", () => {
+  eq(Q.estimateSeconds(1000000, 100000), 10);
+  eq(Q.estimateSeconds(Infinity, 100000), Infinity);
+  eq(Q.estimateSeconds(1000, 0), Infinity, "an unmeasured rate is not zero time");
+});
+
+check("a width-3 scan visits exactly C(m,3) combinations, each once", () => {
+  const n = 16;
+  const msg = M.randomize(M.createMessage(n));
+  const scan = Q.createFlipScan(msg, 3);
+  eq(scan.total, Q.combinations(n, 3));
+  eq(scan.total, 560);
+  let r; do { r = scan.step(37); } while (!r.done);
+  eq(r.tested, 560);
+  eq(r.n, 3);
+});
+
+check("the odometer emits strictly increasing, distinct indices", () => {
+  /* If a combination ever repeated an index, toggling it twice would cancel
+   * and the scan would silently be probing a narrower change than it claims. */
+  const n = 12;
+  const msg = M.createMessage(n);
+  const scan = Q.createFlipScan(msg, 3);
+  const seen = new Set();
+  let r;
+  do {
+    r = scan.step(1);
+    if (r.bestIndices) {
+      const idx = r.bestIndices;
+      eq(idx.length, 3);
+      ok(idx[0] < idx[1] && idx[1] < idx[2], "strictly increasing: " + idx);
+      seen.add(idx.join(","));
+    }
+  } while (!r.done);
+  eq(r.tested, Q.combinations(n, 3));
+});
+
+check("a width-3 scan finds the same winner as an exhaustive search", () => {
+  const n = 18;
+  const msg = M.randomize(M.createMessage(n));
+  const snapshot = Uint8Array.from(msg.bytes);
+
+  let best = null, bestDigest = null;
+  for (let a = 0; a < n; a++) {
+    for (let b = a + 1; b < n; b++) {
+      for (let c = b + 1; c < n; c++) {
+        const probe = { bytes: Uint8Array.from(snapshot), nbits: n };
+        M.toggleBit(probe, a); M.toggleBit(probe, b); M.toggleBit(probe, c);
+        const d = S.hashEx(probe.bytes, probe.nbits);
+        if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
+          bestDigest = d; best = [a, b, c];
+        }
+      }
+    }
+  }
+
+  const scan = Q.createFlipScan(msg, 3);
+  let r; do { r = scan.step(11); } while (!r.done);
+  const res = scan.apply();
+  eq(res.indices, best);
+  eq(res.n, 3);
+  eq(S.bytesToHex(res.after), S.bytesToHex(bestDigest));
+  eq(S.hashHex(msg.bytes, msg.nbits), S.bytesToHex(bestDigest));
+});
+
+check("apply flips exactly n bits, and the right ones", () => {
+  const n = 18;
+  const msg = M.randomize(M.createMessage(n));
+  const before = Uint8Array.from(msg.bytes);
+  const scan = Q.createFlipScan(msg, 3);
+  let r; do { r = scan.step(500); } while (!r.done);
+  const res = scan.apply();
+
+  const differing = [];
+  for (let i = 0; i < n; i++) {
+    const b = i >> 3, mask = 1 << (7 - (i & 7));
+    if ((before[b] & mask) !== (msg.bytes[b] & mask)) differing.push(i);
+  }
+  eq(differing, res.indices);
+  eq(differing.length, 3);
+});
+
+check("the message is intact between steps at any width", () => {
+  for (const width of [1, 2, 3, 4]) {
+    const msg = M.randomize(M.createMessage(20));
+    const before = Array.from(msg.bytes);
+    const scan = Q.createFlipScan(msg, width);
+    for (let i = 0; i < 4; i++) {
+      scan.step(13);
+      eq(Array.from(msg.bytes), before, "width " + width + ", step " + i);
+    }
+  }
+});
+
+check("a width wider than the message scans nothing and applies nothing", () => {
+  const scan = Q.createFlipScan(M.createMessage(3), 5);
+  eq(scan.total, 0);
+  eq(scan.step(10).done, true);
+  eq(scan.apply(), null);
+});
+
+check("width 1 through the general scanner equals bestSingleFlip", () => {
+  const a = M.randomize(M.createMessage(64));
+  const b = { bytes: Uint8Array.from(a.bytes), nbits: 64 };
+  const viaScan = Q.createFlipScan(a, 1);
+  viaScan.step(64);
+  eq(viaScan.apply().indices, Q.bestSingleFlip(b).indices,
+    "one implementation, so these cannot disagree");
+});
+
+// ---------------------------------------------------------------------
+group("search: bits that do not change the leading zeros");
+// ---------------------------------------------------------------------
+
+check("the map classifies every bit, and the counts add up", () => {
+  const msg = M.randomize(M.createMessage(513));
+  const nz = Q.leadingZeroDeltaMap(msg);
+  eq(nz.map.length, 513);
+  eq(nz.same + nz.better + nz.worse, 513, "every bit gets exactly one verdict");
+  eq(nz.base, P.leadingZeroBits(S.hashEx(msg.bytes, msg.nbits)));
+});
+
+check("each verdict is what actually happens when that bit is flipped", () => {
+  /* Verified against the real thing for every bit, not sampled. */
+  const msg = M.randomize(M.createMessage(120));
+  const nz = Q.leadingZeroDeltaMap(msg);
+  for (let i = 0; i < 120; i++) {
+    M.toggleBit(msg, i);
+    const z = P.leadingZeroBits(S.hashEx(msg.bytes, msg.nbits));
+    M.toggleBit(msg, i);
+    const expected = z === nz.base ? 0 : (z > nz.base ? 1 : -1);
+    eq(nz.map[i], expected, "bit " + i + ": " + z + " vs base " + nz.base);
+  }
+});
+
+check("the map leaves the message exactly as it found it", () => {
+  const msg = M.randomize(M.createMessage(513));
+  const before = Array.from(msg.bytes);
+  Q.leadingZeroDeltaMap(msg);
+  eq(Array.from(msg.bytes), before);
+});
+
+check("neutral bits are common at zero leading zeros and rare above", () => {
+  /* The property that makes this feature worth reading: it says little on an
+   * unsearched digest and a lot on a searched one. */
+  const msg = M.randomize(M.createMessage(256));
+  const low = Q.leadingZeroDeltaMap(msg);
+  if (low.base === 0) {
+    ok(low.same > 60 && low.same < 196,
+      "about half of 256 bits should be neutral, got " + low.same);
+  }
+
+  /* Push it to a high leading-zero count, then re-map. */
+  const r = Q.run(msg, Q.windowFromRange(256, 192, 255), {
+    samples: 200000, thresholdBits: 12, rand: makeRand(21),
+  });
+  ok(r.found, "sampling should reach 12 zero bits");
+  const high = Q.leadingZeroDeltaMap(msg);
+  eq(high.base, r.bits);
+  ok(high.same <= 4,
+    "at " + high.base + " leading zeros almost nothing should be neutral, got " +
+    high.same);
+  ok(high.worse > 240, "nearly every bit should lose zeros, got " + high.worse);
+});
+
+check("an empty message produces an empty map", () => {
+  const nz = Q.leadingZeroDeltaMap(M.createMessage(0));
+  eq(nz.map.length, 0);
+  eq(nz.same + nz.better + nz.worse, 0);
 });
 
 // ---------------------------------------------------------------------
@@ -1766,8 +1958,8 @@ check("best single flip finds the same bit the module does", () => {
   dom.fire(el("btn-best-flip"), "click", { target: el("btn-best-flip") });
 
   ok(/kept/.test(el("flip-result").innerHTML));
-  ok(new RegExp("bit " + expected.index + "<").test(el("flip-result").innerHTML),
-    "should report bit " + expected.index + ": " + el("flip-result").innerHTML);
+  ok(new RegExp("bit " + expected.indices[0] + "<").test(el("flip-result").innerHTML),
+    "should report bit " + expected.indices[0] + ": " + el("flip-result").innerHTML);
   eq(el("input-hex").value, S.bytesToHex(probe.bytes),
     "the message must be left on the winning flip");
   eq(shownDigest(), S.bytesToHex(expected.after));
@@ -1783,23 +1975,25 @@ check("best single flip reports how far the digest moved", () => {
 });
 
 check("best pair flip really does span several frames", () => {
-  /* 200 bits is 19,900 pairs against a 3,000-pair budget, so this needs
-   * about seven frames. A shorter message would finish inside one and the
-   * test would not be exercising the resumable path at all. */
-  setNbits(200);
-  const probe = { bytes: hx(el("input-hex").value), nbits: 200 };
-  const scan = Q.createPairScan(probe);
+  /* 250 bits is 31,125 pairs: over the limit below which a scan just runs
+   * synchronously, and about ten frames at a 3,000-pair budget. A shorter
+   * message would finish in one go and the test would not be exercising the
+   * resumable path at all. */
+  setNbits(250);
+  const probe = { bytes: hx(el("input-hex").value), nbits: 250 };
+  const scan = Q.createFlipScan(probe, 2);
   let r; do { r = scan.step(4000); } while (!r.done);
   const expected = scan.apply();
 
   dom.fire(el("btn-best-pair"), "click", { target: el("btn-best-pair") });
-  eq(el("btn-best-pair").textContent, "Scanning…", "the button must show it");
-  ok(el("btn-best-pair").disabled, "and refuse a second scan");
+  eq(el("btn-best-pair").textContent, "Cancel",
+    "the button that started it becomes its cancel button");
   ok(el("btn-search").disabled, "sampling must not run over a scan");
-  ok(/scanning pairs/.test(el("flip-result").innerHTML));
+  ok(el("btn-best-flip").disabled, "nor another scan");
+  ok(/scanning 2-bit flips/.test(el("flip-result").innerHTML));
 
   let frames = 0;
-  while (el("btn-best-pair").disabled && frames < 400) {
+  while (el("btn-best-pair").textContent === "Cancel" && frames < 400) {
     dom.pumpFrames(1);
     frames++;
   }
@@ -1812,18 +2006,19 @@ check("best pair flip really does span several frames", () => {
   ok(new RegExp("bits " + expected.indices.join(" \\+ "))
     .test(el("flip-result").innerHTML),
     "must name both bits: " + el("flip-result").innerHTML);
-  ok(/pairs/.test(el("flip-result").innerHTML), "must say how many were tried");
+  ok(/2-bit combinations/.test(el("flip-result").innerHTML),
+    "must say how many were tried: " + el("flip-result").innerHTML);
 });
 
 check("the message is untouched while a pair scan is mid-flight", () => {
-  setNbits(200);
+  setNbits(250);
   const before = el("input-hex").value;
   dom.fire(el("btn-best-pair"), "click", { target: el("btn-best-pair") });
   dom.pumpFrames(1);
-  ok(el("btn-best-pair").disabled, "the scan must still be in flight");
+  eq(el("btn-best-pair").textContent, "Cancel", "the scan must still be in flight");
   eq(el("input-hex").value, before,
     "a partial scan must not leave a probe applied");
-  eq(shownDigest(), S.hashHex(hx(before), 200),
+  eq(shownDigest(), S.hashHex(hx(before), 250),
     "and the digest must still be the untouched message's");
 
   /* Abandoning it must also leave the message whole. */
@@ -1832,6 +2027,135 @@ check("the message is untouched while a pair scan is mid-flight", () => {
   eq(el("btn-best-pair").textContent, "Best pair flip");
   dom.pumpFrames(20);
   eq(el("input-hex").value, before, "an abandoned scan must not resume");
+});
+
+check("the n-flip control reports the count and an estimated time", () => {
+  setNbits(513);
+  const setN = (n) => {
+    el("flip-n").value = String(n);
+    dom.fire(el("flip-n"), "change", { target: el("flip-n") });
+  };
+
+  setN(2);
+  let text = el("flip-n-estimate").textContent;
+  ok(/131k combinations/.test(text), text);
+  ok(!el("btn-best-n").disabled, "131k is well within budget: " + text);
+
+  setN(3);
+  text = el("flip-n-estimate").textContent;
+  ok(/22M combinations/.test(text), text);
+});
+
+check("a scan that would take too long is refused, and says why", () => {
+  setNbits(513);
+  el("flip-n").value = "4";              // 2.85 billion combinations
+  dom.fire(el("flip-n"), "change", { target: el("flip-n") });
+  const text = el("flip-n-estimate").textContent;
+  ok(/too long/.test(text), "must say why: " + text);
+  ok(el("btn-best-n").disabled, "and must not offer to start it");
+  /* The refusal has to be driven by the estimate, not by n alone: the same
+   * width on a short message is perfectly feasible. */
+  setNbits(32);
+  ok(!el("btn-best-n").disabled,
+    "C(32,4) is 36k — fine: " + el("flip-n-estimate").textContent);
+});
+
+check("an n wider than the message is reported, not offered", () => {
+  setNbits(3);
+  el("flip-n").value = "5";
+  dom.fire(el("flip-n"), "change", { target: el("flip-n") });
+  ok(/no 5-bit combinations/.test(el("flip-n-estimate").textContent),
+    el("flip-n-estimate").textContent);
+  ok(el("btn-best-n").disabled);
+});
+
+check("the n-flip scan applies the winner, agreeing with the module", () => {
+  setNbits(32);
+  el("flip-n").value = "3";
+  dom.fire(el("flip-n"), "change", { target: el("flip-n") });
+
+  const probe = { bytes: hx(el("input-hex").value), nbits: 32 };
+  const scan = Q.createFlipScan(probe, 3);
+  let r; do { r = scan.step(2000); } while (!r.done);
+  const expected = scan.apply();
+
+  dom.fire(el("btn-best-n"), "click", { target: el("btn-best-n") });
+  eq(el("input-hex").value, S.bytesToHex(probe.bytes));
+  eq(shownDigest(), S.bytesToHex(expected.after));
+  ok(/3-bit combinations/.test(el("flip-result").innerHTML),
+    el("flip-result").innerHTML);
+  ok(new RegExp("bits " + expected.indices.join(" \\+ "))
+    .test(el("flip-result").innerHTML), el("flip-result").innerHTML);
+});
+
+check("marking neutral bits classifies every bit and counts them", () => {
+  setNbits(513);
+  el("chk-neutral").checked = true;
+  dom.fire(el("chk-neutral"), "change", { target: el("chk-neutral") });
+
+  const cells = bitCells();
+  const same = cells.filter((c) => c.classList.contains("lz-same")).length;
+  const better = cells.filter((c) => c.classList.contains("lz-better")).length;
+  const worse = cells.filter((c) => c.classList.contains("lz-worse")).length;
+  eq(same + better + worse, 513, "every bit must carry exactly one verdict");
+
+  /* The marks and the counts beside them come from the same map, so they
+   * cannot disagree — which is exactly why it is worth asserting. */
+  const expected = Q.leadingZeroDeltaMap(
+    { bytes: hx(el("input-hex").value), nbits: 513 });
+  eq(same, expected.same);
+  eq(better, expected.better);
+  eq(worse, expected.worse);
+
+  const summary = el("neutral-summary").innerHTML;
+  ok(new RegExp("no change if flipped</span><span class=\"n\">" + same + "<")
+    .test(summary), summary);
+  ok(new RegExp("current leading zeros</span><span class=\"n\">" +
+    expected.base + "<").test(summary), summary);
+});
+
+check("no bit carries a neutral verdict when the marking is off", () => {
+  el("chk-neutral").checked = false;
+  dom.fire(el("chk-neutral"), "change", { target: el("chk-neutral") });
+  const cells = bitCells();
+  eq(cells.filter((c) => c.classList.contains("lz-same")).length, 0);
+  eq(cells.filter((c) => c.classList.contains("lz-worse")).length, 0);
+  eq(el("neutral-summary").innerHTML, "");
+});
+
+check("pausing the sampler rewinds to the best sample it found", () => {
+  setNbits(513);
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+  el("search-threshold").value = "200";      // unreachable: it will not stop
+  dom.fire(el("search-threshold"), "change", { target: el("search-threshold") });
+  el("search-rate").value = "300";
+  dom.fire(el("search-rate"), "change", { target: el("search-rate") });
+
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });
+  dom.pumpFrames(30);
+
+  /* Mid-run the message is wherever the last sample landed, which is almost
+   * certainly not the best one. */
+  const bestBits = Number(el("search-stats").innerHTML
+    .match(/best so far<\/span><span class="n">(\d+) zero bits/)[1]);
+  ok(bestBits >= 1, "a few thousand samples should beat zero");
+
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });   // pause
+
+  eq(P.leadingZeroBits(hx(shownDigest())), bestBits,
+    "the message left on screen must be the best sample, not the last one");
+  eq(shownDigest(), S.hashHex(hx(el("input-hex").value), 513),
+    "and must still be internally consistent");
+  ok(/rewound to the best sample/.test(el("search-stats").innerHTML),
+    "and it must say so: " + el("search-stats").innerHTML);
+});
+
+check("pausing with nothing sampled leaves the message alone", () => {
+  dom.fire(el("btn-search-reset"), "click", { target: el("btn-search-reset") });
+  const before = el("input-hex").value;
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });   // start
+  dom.fire(el("btn-search"), "click", { target: el("btn-search") });   // pause
+  eq(el("input-hex").value, before, "no samples drawn, so nothing to rewind to");
 });
 
 check("the hardest-difficulty panel reports a difficulty and an nBits", () => {

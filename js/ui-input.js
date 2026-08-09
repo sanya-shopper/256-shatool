@@ -28,6 +28,7 @@
   "use strict";
 
   var M = root.SHATOOL_MODEL;
+  var SEARCH = root.SHATOOL_SEARCH;
   var BYTES_PER_ROW = 4;   // one 32-bit word, matching the schedule words
 
   /**
@@ -58,7 +59,12 @@
     var elSearchStats = document.getElementById("search-stats");
     var elBestFlip = document.getElementById("btn-best-flip");
     var elBestPair = document.getElementById("btn-best-pair");
+    var elFlipN = document.getElementById("flip-n");
+    var elBestN = document.getElementById("btn-best-n");
+    var elFlipNEstimate = document.getElementById("flip-n-estimate");
     var elFlipResult = document.getElementById("flip-result");
+    var elNeutral = document.getElementById("chk-neutral");
+    var elNeutralSummary = document.getElementById("neutral-summary");
 
     /* What the current DOM structure was built for. When either of these
      * changes the grid is rebuilt; otherwise it is patched. */
@@ -102,7 +108,23 @@
     elSearchBtn.addEventListener("click", function () { cb.onToggleSearch(); });
     elSearchReset.addEventListener("click", function () { cb.onResetSearch(); });
     elBestFlip.addEventListener("click", function () { cb.onBestFlip(); });
-    elBestPair.addEventListener("click", function () { cb.onBestPair(); });
+    elBestPair.addEventListener("click", function () {
+      if (elBestPair.classList.contains("running")) cb.onCancelScan();
+      else cb.onBestPair();
+    });
+    elFlipN.addEventListener("change", function () {
+      cb.onSetFlipN(parseInt(elFlipN.value, 10));
+    });
+    elNeutral.addEventListener("change", function () {
+      cb.onShowNeutral(elNeutral.checked);
+    });
+
+    /* One button, two jobs: it starts a scan, and while one is running it
+     * cancels it. A long scan the user cannot stop is worse than no scan. */
+    elBestN.addEventListener("click", function () {
+      if (elBestN.classList.contains("running")) cb.onCancelScan();
+      else cb.onBestN();
+    });
 
     /* Delegated handlers on the grid: one listener each rather than two per
      * byte, so rebuilding the grid never leaks listeners. */
@@ -259,11 +281,17 @@
        * part of the message is moving and which is being held fixed. */
       var win = state.search.window;
       var winEnd = win.start + win.width;
+      var nz = state.neutral;
       for (var i = 0; i < msg.nbits; i++) {
         var cell = bitCells[i];
         if (!cell) continue;
         cell.classList.toggle("on", M.getBit(msg, i) === 1);
         cell.classList.toggle("in-window", i >= win.start && i < winEnd);
+        /* Effect on the leading zero count, as a bottom edge on the cell:
+         * grey for no change, green for more, red for fewer. */
+        cell.classList.toggle("lz-same", !!nz && nz.map[i] === 0);
+        cell.classList.toggle("lz-better", !!nz && nz.map[i] === 1);
+        cell.classList.toggle("lz-worse", !!nz && nz.map[i] === -1);
       }
 
       if (elNbits !== active) elNbits.value = String(msg.nbits);
@@ -278,6 +306,7 @@
       }
 
       paintSearch(state);
+      paintNeutral(state);
       paintSummary(state);
     }
 
@@ -305,16 +334,28 @@
       elSearchWindowLabel.textContent = s.window.width +
         (s.window.width === 1 ? " bit" : " bits");
 
-      var scanning = state.pairProgress !== null;
+      /* Truthiness, not `!== null`: an absent field is `undefined`, and
+       * `undefined !== null` is true, which would put the whole panel into a
+       * permanent "scanning" state that nothing can clear. */
+      var scanning = !!state.flipProgress;
       elSearchBtn.textContent = s.running ? "Pause" : "Start sampling";
       elSearchBtn.classList.toggle("running", s.running);
       /* A zero-length message has no window to resample, and nothing else may
-       * touch the message while a pair scan is walking it. */
+       * touch the message while a flip scan is walking it. */
       elSearchBtn.disabled = state.msg.nbits === 0 || scanning;
       elBestFlip.disabled = state.msg.nbits === 0 || s.running || scanning;
-      elBestPair.disabled = state.msg.nbits < 2 || s.running || scanning;
-      elBestPair.classList.toggle("running", scanning);
-      elBestPair.textContent = scanning ? "Scanning…" : "Best pair flip";
+
+      /* Whichever button started the running scan becomes its cancel button;
+       * a long scan the user cannot stop is worse than no scan. The single
+       * flip needs none — it finishes inside one frame. */
+      var pairRunning = scanning && state.flipProgress.n === 2;
+      elBestPair.classList.toggle("running", pairRunning);
+      elBestPair.textContent = pairRunning ? "Cancel" : "Best pair flip";
+      elBestPair.disabled = pairRunning
+        ? false
+        : (state.msg.nbits < 2 || s.running || scanning);
+
+      paintFlipN(state, scanning);
 
       var expected = Math.pow(2, s.threshold);
       var rows = [
@@ -325,6 +366,8 @@
       if (s.rate2 > 0) rows.push(["rate", fmtCount(s.rate2) + " / s"]);
       if (s.found) {
         rows.push(["result", "stopped: " + s.threshold + " zero bits reached"]);
+      } else if (s.rewound) {
+        rows.push(["result", "paused — rewound to the best sample"]);
       }
 
       var html = "";
@@ -338,20 +381,70 @@
     }
 
     /**
-     * Either the progress of a running pair scan or the outcome of the last
-     * completed scan — never both, since one replaces the other.
+     * The general n-bit flip control: how many combinations it would try,
+     * how long that should take on this machine, and whether it is allowed.
+     *
+     * The count is the whole reason this control needs an estimate at all.
+     * For a 513-bit message it is 513, then 131 thousand, then 22 million,
+     * then 2.8 billion — each step in n multiplies the work by roughly m/n.
+     * A button that silently starts a scan lasting days is worse than one
+     * that says it will not.
+     */
+    function paintFlipN(state, scanning) {
+      var running = scanning && state.flipProgress.n === state.flipN;
+      if (elFlipN !== document.activeElement) elFlipN.value = String(state.flipN);
+      elFlipN.disabled = scanning;
+
+      var total = SEARCH.combinations(state.msg.nbits, state.flipN);
+      var seconds = SEARCH.estimateSeconds(total, state.hashRate);
+      var tooBig = seconds > SEARCH.MAX_SCAN_SECONDS;
+
+      elBestN.classList.toggle("running", running);
+      elBestN.textContent = running ? "Cancel" : "Scan";
+      elBestN.disabled = running
+        ? false                        // cancelling is always allowed
+        : (scanning || s_running(state) || total === 0 || tooBig);
+
+      if (total === 0) {
+        elFlipNEstimate.textContent =
+          "a " + state.msg.nbits + "-bit message has no " + state.flipN +
+          "-bit combinations";
+        return;
+      }
+      var text = fmtCount(total) + " combinations · ≈ " + fmtDuration(seconds);
+      if (tooBig) {
+        text += " — too long; lower n or shorten the message";
+      }
+      elFlipNEstimate.textContent = text;
+    }
+
+    function s_running(state) { return state.search.running; }
+
+    /** Seconds as something a person can judge at a glance. */
+    function fmtDuration(sec) {
+      if (!isFinite(sec)) return "forever";
+      if (sec < 1) return "under a second";
+      if (sec < 90) return Math.round(sec) + "s";
+      if (sec < 5400) return Math.round(sec / 60) + " min";
+      if (sec < 172800) return (sec / 3600).toFixed(1) + " hours";
+      return (sec / 86400).toFixed(1) + " days";
+    }
+
+    /**
+     * Either the progress of a running scan or the outcome of the last
+     * completed one — never both, since one replaces the other.
      */
     function paintFlip(state) {
-      if (state.pairProgress) { paintPairProgress(state.pairProgress); return; }
+      if (state.flipProgress) { paintScanProgress(state.flipProgress); return; }
 
       var f = state.flip;
       if (!f) { elFlipResult.innerHTML = ""; return; }
 
-      var pair = f.kind === "pair";
+      var unit = f.n === 1 ? "single-bit flips" : f.n + "-bit combinations";
       var dir = f.improved ? "fell" : "rose";
       var rows = [
-        ["tested", fmtCount(f.tested) + (pair ? " pairs" : " single-bit flips")],
-        ["kept", (pair ? "bits " : "bit ") + f.indices.join(" + ")],
+        ["tested", fmtCount(f.tested) + " " + unit],
+        ["kept", (f.n === 1 ? "bit " : "bits ") + f.indices.join(" + ")],
         ["digest value", dir + " by ≈ 2^" + f.log2Delta.toFixed(1)],
         ["leading zeros", f.zerosBefore + " → " + f.zerosAfter],
       ];
@@ -362,25 +455,66 @@
           '">' + rows[i][1] + "</span></div>";
       }
       if (!f.improved) {
-        html += '<div class="row"><span class="hint-inline">no ' +
-          (pair ? "pair" : "single flip") +
-          " lowered it; this was the smallest rise</span></div>";
+        html += '<div class="row"><span class="hint-inline">nothing at width ' +
+          f.n + " lowered it; this was the smallest rise</span></div>";
       }
       elFlipResult.innerHTML = html;
     }
 
-    function paintPairProgress(p) {
+    function paintScanProgress(p) {
       var pct = p.total > 0 ? Math.floor((p.tested / p.total) * 100) : 100;
-      var html = '<div class="row"><span>scanning pairs</span>' +
-        '<span class="n">' + pct + "%</span></div>" +
+      var html = '<div class="row"><span>scanning ' + p.n +
+        '-bit flips</span><span class="n">' + pct + "%</span></div>" +
         '<div class="row"><span>tested</span><span class="n">' +
         fmtCount(p.tested) + " of " + fmtCount(p.total) + "</span></div>";
-      if (p.bestI !== undefined && p.bestI >= 0) {
+      if (p.etaSeconds !== null && p.etaSeconds !== undefined) {
+        html += '<div class="row"><span>remaining</span><span class="n">' +
+          fmtDuration(p.etaSeconds) + "</span></div>";
+      }
+      if (p.bestIndices) {
         html += '<div class="row"><span>best so far</span><span class="n">bits ' +
-          p.bestI + " + " + p.bestJ + "</span></div>";
+          p.bestIndices.join(" + ") + "</span></div>";
       }
       html += '<div class="progress"><span style="width:' + pct + '%"></span></div>';
       elFlipResult.innerHTML = html;
+    }
+
+    /**
+     * The neutral-bit classification, as counts under the checkbox.
+     *
+     * The per-bit marks go on the grid itself, in paint(); this is the
+     * summary and the caveat. The caveat matters: on a digest with no leading
+     * zeros about half of all bits come back neutral and the map says very
+     * little, whereas on one a sampling run has pushed to a dozen zeros
+     * almost every bit worsens it and the neutral ones are genuinely notable.
+     */
+    function paintNeutral(state) {
+      elNeutral.checked = state.showNeutral;
+      var nz = state.neutral;
+      if (!nz) { elNeutralSummary.innerHTML = ""; return; }
+
+      var rows = [
+        ["current leading zeros", String(nz.base)],
+        [swatch("--fg-faint") + "no change if flipped", String(nz.same)],
+        [swatch("--ok") + "more leading zeros", String(nz.better)],
+        [swatch("--bad") + "fewer leading zeros", String(nz.worse)],
+      ];
+      var html = "";
+      for (var i = 0; i < rows.length; i++) {
+        html += '<div class="row"><span>' + rows[i][0] +
+          '</span><span class="n">' + rows[i][1] + "</span></div>";
+      }
+      html += '<div class="row"><span class="hint-inline">' +
+        (nz.base === 0
+          ? "with no leading zeros to lose, about half of all bits are neutral"
+          : "at " + nz.base + " leading zeros, landing on exactly that " +
+            "count again is unlikely, so few bits are neutral") +
+        "</span></div>";
+      elNeutralSummary.innerHTML = html;
+    }
+
+    function swatch(varName) {
+      return '<span class="swatch" style="background:var(' + varName + ')"></span>';
     }
 
     /** Compact counts: 1.2k, 3.4M, 2^78 once past what a reader can hold. */

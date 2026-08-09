@@ -353,6 +353,13 @@ button:active { background: #1a212a; }
  * moving and which is being held fixed. */
 .bit.in-window { box-shadow: 0 0 0 1px rgba(232, 163, 61, 0.55); }
 
+/* What flipping this bit would do to the digest's leading zero count, as a
+ * bottom edge. Kept off the cell's fill, which already means the bit's own
+ * value — one channel, one meaning. */
+.bit.lz-same   { border-bottom: 2px solid var(--fg-faint); }
+.bit.lz-better { border-bottom: 2px solid var(--ok); }
+.bit.lz-worse  { border-bottom: 2px solid transparent; }
+
 /* The transition is what animates every edit: a flipped bit fades between
  * colours instead of jumping, which at sampling speed reads as motion rather
  * than as a strobe. Cells are patched in place, never rebuilt, precisely so

@@ -114,6 +114,7 @@
 
     var attempts = 0;
     var bestBits = -1;
+    var bestBytes = null;
     var bits = 0;
     var digest = null;
     var found = false;
@@ -123,7 +124,14 @@
       digest = S.hashEx(msg.bytes, msg.nbits);
       bits = P.leadingZeroBits(digest);
       attempts++;
-      if (bits > bestBits) bestBits = bits;
+      if (bits > bestBits) {
+        bestBits = bits;
+        /* Copied only when the best improves, not once per sample, so the
+         * cost is a handful of copies across a run of millions. Keeping the
+         * bytes — not just the count — is what lets a paused run be rewound
+         * to its best point rather than left wherever it happened to stop. */
+        bestBytes = Uint8Array.from(msg.bytes);
+      }
       if (bits >= threshold) { found = true; break; }
     }
 
@@ -132,8 +140,86 @@
       found: found,
       bits: bits,
       bestBits: bestBits,
+      bestBytes: bestBytes,
       digest: digest,
     };
+  }
+
+  /**
+   * C(m, n), as a float, saturating to Infinity rather than overflowing.
+   *
+   * Multiplying and dividing alternately keeps the running value small enough
+   * to stay exact well past anything this tool will scan: C(513,3) is
+   * 22,369,536 and lands on an integer. Beyond a double's range the answer is
+   * Infinity, which is the right thing to display for a scan nobody will run.
+   */
+  function combinations(m, n) {
+    if (n < 0 || n > m) return 0;
+    var r = 1;
+    for (var i = 0; i < n; i++) {
+      r = (r * (m - i)) / (i + 1);
+      if (!isFinite(r)) return Infinity;
+    }
+    return Math.round(r);
+  }
+
+  /**
+   * Longest scan the UI will offer to start, in seconds.
+   *
+   * This is a real limit, not a formality. For a 513-bit message the counts
+   * are 513, then 131,328, then 22,369,536, then 2.85 billion — each step in
+   * n multiplies the work by roughly m/n. Three bits is minutes; four is
+   * days. Offering a button that would never finish is worse than not
+   * offering it, so the control reports the count and the estimate and
+   * refuses above this.
+   */
+  var MAX_SCAN_SECONDS = 180;
+
+  /** Seconds a scan of `total` combinations should take at a measured rate. */
+  function estimateSeconds(total, hashesPerSecond) {
+    if (!isFinite(total)) return Infinity;
+    if (!(hashesPerSecond > 0)) return Infinity;
+    return total / hashesPerSecond;
+  }
+
+  /**
+   * Classify every input bit by what flipping it does to the digest's leading
+   * zero count.
+   *
+   * Answers "which bits do not change the leading zeros at all" — plus, for
+   * free, which improve and which worsen it. One hash per bit, so the whole
+   * map costs about as much as a single-flip scan.
+   *
+   * What the answer looks like is worth knowing before reading it. On a
+   * digest with no leading zeros, flipping a bit leaves the count at zero
+   * whenever the new digest's top bit is 1 — about half the time — so roughly
+   * half the bits come back neutral and the map says little. On a digest that
+   * a sampling run has pushed to a dozen leading zeros, landing on exactly
+   * that count again is very unlikely, so almost every bit worsens it and the
+   * few that do not are genuinely notable. The map is most informative
+   * exactly where the search has already done some work.
+   *
+   * @param {{bytes: Uint8Array, nbits: number}} msg restored before returning
+   * @returns {{base: number, map: Int8Array, same: number, better: number,
+   *            worse: number}} map[i] is 0 if bit i leaves the count alone,
+   *   +1 if flipping it gains leading zeros, -1 if it loses them
+   */
+  function leadingZeroDeltaMap(msg) {
+    var n = msg.nbits;
+    var map = new Int8Array(n);
+    var same = 0, better = 0, worse = 0;
+    if (n === 0) return { base: 256, map: map, same: 0, better: 0, worse: 0 };
+
+    var base = P.leadingZeroBits(S.hashEx(msg.bytes, msg.nbits));
+    for (var i = 0; i < n; i++) {
+      M.toggleBit(msg, i);
+      var z = P.leadingZeroBits(S.hashEx(msg.bytes, msg.nbits));
+      M.toggleBit(msg, i);
+      if (z === base) { map[i] = 0; same++; }
+      else if (z > base) { map[i] = 1; better++; }
+      else { map[i] = -1; worse++; }
+    }
+    return { base: base, map: map, same: same, better: better, worse: worse };
   }
 
   /**
@@ -166,125 +252,138 @@
    * "best" flip is a rise. `improved` says which happened.
    *
    * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED
-   * @returns {{index: number, before: Uint8Array, after: Uint8Array,
-   *            improved: boolean, delta: Uint8Array, log2Delta: number,
-   *            tested: number}|null} null for a zero-length message
+   * @returns {Object|null} null for a zero-length message
    */
   function bestSingleFlip(msg) {
     if (msg.nbits === 0) return null;
-
-    var before = S.hashEx(msg.bytes, msg.nbits);
-    var bestIndex = -1;
-    var bestDigest = null;
-
-    for (var i = 0; i < msg.nbits; i++) {
-      M.toggleBit(msg, i);
-      var d = S.hashEx(msg.bytes, msg.nbits);
-      M.toggleBit(msg, i);          // restore before moving on
-      if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
-        bestDigest = d;
-        bestIndex = i;
-      }
-    }
-
-    M.toggleBit(msg, bestIndex);    // leave the message on the winner
-
-    var improved = P.compareValues(bestDigest, before) < 0;
-    /* Report the magnitude of the move, whichever direction it went. */
-    var delta = improved
-      ? P.sub256(before, bestDigest).diff
-      : P.sub256(bestDigest, before).diff;
-
-    return {
-      index: bestIndex,
-      before: before,
-      after: bestDigest,
-      improved: improved,
-      delta: delta,
-      log2Delta: P.log2Value(delta),
-      tested: msg.nbits,
-    };
+    var scan = createFlipScan(msg, 1);
+    scan.step(msg.nbits);           // one step covers all m combinations
+    return scan.apply();
   }
 
   /**
-   * A resumable scan over every *pair* of single-bit flips.
+   * A resumable scan over every combination of `n` simultaneous bit flips.
    *
-   * There are n(n-1)/2 pairs — 131,328 for a 513-bit message — and each costs
-   * a hash, so a full scan is a second or more of solid computation. Done in
-   * one call that would freeze the page for the duration and show nothing
-   * while it did. So this is a cursor: `step(budget)` advances it by at most
-   * `budget` pairs and returns, letting the caller spread the scan across
-   * animation frames and report progress between them.
+   * One implementation covers every width the UI offers: n = 1 is the
+   * single-flip scan, n = 2 the pair scan, and larger n the same thing at a
+   * cost that grows by roughly m/n with every step. Having a second,
+   * hand-rolled loop for each width is how the two drift apart.
    *
-   * The message is restored after every individual pair, never merely at the
-   * end of a step. That is what makes pausing between frames safe: whatever
-   * renders in the gap sees the original message, not a half-applied probe.
+   * ---------------------------------------------------------------
+   * Why it is a cursor rather than a function
+   * ---------------------------------------------------------------
    *
-   * Pairs are not a superset of singles — this scan never tries a one-bit
-   * change — so its winner can be worse than the best single flip. The two
-   * are reported side by side rather than one being presented as an
-   * improvement on the other.
+   * C(513, 2) is 131,328 hashes — over a second of solid computation — and
+   * C(513, 3) is 22,369,536, which is minutes. A single call would freeze the
+   * page for the duration and show nothing while it did. `step(budget)`
+   * advances by at most `budget` combinations and returns, so the caller can
+   * spread the scan across animation frames, report progress, and let it be
+   * cancelled.
+   *
+   * The message is restored after every *individual* combination, never
+   * merely at the end of a step. That is what makes pausing between frames
+   * safe: whatever renders in the gap sees the original message, not a
+   * half-applied probe.
+   *
+   * ---------------------------------------------------------------
+   * The odometer
+   * ---------------------------------------------------------------
+   *
+   * `idx` holds a strictly increasing tuple of bit positions. Advancing finds
+   * the rightmost element that has not yet hit its ceiling (position k can
+   * reach at most m - n + k, since everything to its right must still fit
+   * above it), increments it, and repacks everything to its right as tightly
+   * as possible. That enumerates every combination exactly once, in
+   * lexicographic order, with no allocation per step.
+   *
+   * Note that widths are not nested: a scan of width n never tries a change
+   * of width n-1, so a wider scan's winner can be worse than a narrower
+   * one's. The UI reports what each found rather than implying one improves
+   * on the other.
    *
    * @param {{bytes: Uint8Array, nbits: number}} msg MUTATED by apply()
+   * @param {number} n how many bits to flip at once
    */
-  function createPairScan(msg) {
-    var n = msg.nbits;
-    var total = n < 2 ? 0 : (n * (n - 1)) / 2;
-    var base = n === 0 ? null : S.hashEx(msg.bytes, msg.nbits);
+  function createFlipScan(msg, n) {
+    var m = msg.nbits;
+    var width = Math.max(1, n | 0);
+    var total = combinations(m, width);
+    var base = m === 0 ? null : S.hashEx(msg.bytes, msg.nbits);
 
-    var i = 0, j = 1, tested = 0;
-    var bestI = -1, bestJ = -1, bestDigest = null;
+    var idx = null;
+    var exhausted = m < width || m === 0;
+    var tested = 0;
+    var bestIdx = null;
+    var bestDigest = null;
 
-    function snapshot(done) {
+    if (!exhausted) {
+      idx = new Array(width);
+      for (var i = 0; i < width; i++) idx[i] = i;
+    }
+
+    function advance() {
+      var k = width - 1;
+      while (k >= 0 && idx[k] === m - width + k) k--;
+      if (k < 0) return false;
+      idx[k]++;
+      for (var j = k + 1; j < width; j++) idx[j] = idx[j - 1] + 1;
+      return true;
+    }
+
+    /* Toggling the same set twice restores it, because the positions in a
+     * combination are distinct by construction. */
+    function toggleAll() {
+      for (var i = 0; i < width; i++) M.toggleBit(msg, idx[i]);
+    }
+
+    function snapshot() {
       return {
-        done: done,
+        done: exhausted,
         tested: tested,
         total: total,
-        bestI: bestI,
-        bestJ: bestJ,
+        n: width,
+        bestIndices: bestIdx ? bestIdx.slice() : null,
         bestDigest: bestDigest,
         base: base,
       };
     }
 
     return {
+      n: width,
       total: total,
 
-      /** Advance by at most `budget` pairs. */
+      /** Advance by at most `budget` combinations. */
       step: function (budget) {
         var count = 0;
-        while (i < n - 1 && count < budget) {
-          M.toggleBit(msg, i);
-          M.toggleBit(msg, j);
+        while (!exhausted && count < budget) {
+          toggleAll();
           var d = S.hashEx(msg.bytes, msg.nbits);
-          M.toggleBit(msg, j);
-          M.toggleBit(msg, i);
+          toggleAll();
 
           if (bestDigest === null || P.compareValues(d, bestDigest) < 0) {
-            bestDigest = d; bestI = i; bestJ = j;
+            bestDigest = d;
+            bestIdx = idx.slice();
           }
           tested++; count++;
-
-          j++;
-          if (j >= n) { i++; j = i + 1; }
+          if (!advance()) exhausted = true;
         }
-        return snapshot(i >= n - 1);
+        return snapshot();
       },
 
       /**
-       * Apply the winning pair to the message.
-       * @returns {Object|null} the same shape bestSingleFlip returns
+       * Apply the winning combination to the message.
+       * @returns {Object|null} null if nothing was ever tried
        */
       apply: function () {
-        if (bestI < 0) return null;
-        M.toggleBit(msg, bestI);
-        M.toggleBit(msg, bestJ);
+        if (!bestIdx) return null;
+        for (var i = 0; i < bestIdx.length; i++) M.toggleBit(msg, bestIdx[i]);
         var improved = P.compareValues(bestDigest, base) < 0;
         var delta = improved
           ? P.sub256(base, bestDigest).diff
           : P.sub256(bestDigest, base).diff;
         return {
-          indices: [bestI, bestJ],
+          indices: bestIdx.slice(),
+          n: width,
           before: base,
           after: bestDigest,
           improved: improved,
@@ -316,7 +415,11 @@
     windowEnd: windowEnd,
     run: run,
     bestSingleFlip: bestSingleFlip,
-    createPairScan: createPairScan,
+    createFlipScan: createFlipScan,
+    combinations: combinations,
+    estimateSeconds: estimateSeconds,
+    MAX_SCAN_SECONDS: MAX_SCAN_SECONDS,
+    leadingZeroDeltaMap: leadingZeroDeltaMap,
     expectedAttempts: expectedAttempts,
   });
 })(typeof globalThis !== "undefined" ? globalThis : this);
