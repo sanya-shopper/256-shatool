@@ -126,6 +126,26 @@ from a `file://` URL with no server and no build step.
   opaque, `prefers-reduced-motion` disables it entirely, and there is an
   explicit Animate checkbox.
 
+- **2026-08-09 — The pair scan is a resumable cursor, not a function.** A
+  full scan is n(n−1)/2 hashes — 131,328 for the default message, measured at
+  ~1.3 s in Node and likely worse in a browser. One synchronous call would
+  freeze the page and show nothing while it did. `createPairScan().step(budget)`
+  advances and returns; `app.js` spreads it across animation frames. The
+  message is restored after every *individual pair*, not at the end of a step,
+  which is what makes pausing between frames safe — whatever renders in the
+  gap sees the original message.
+
+- **2026-08-09 — Pairs are not a superset of singles.** A pair scan never
+  tries a one-bit change, so its winner can be worse than the best single
+  flip. The panel reports what each scan found and does not present one as an
+  improvement on the other.
+
+- **2026-08-09 — "Per frame" was a confusing label.** A user read it as
+  something other than samples-drawn-between-redraws and concluded the
+  sampling had stopped animating. Renamed to "Per redraw" with a tooltip
+  giving the samples-per-second it works out to. No code was wrong; the word
+  was.
+
 ## Open questions
 
 - **No visual verification yet.** The tests prove the app boots, computes

@@ -5,7 +5,7 @@ no server, no build step, no dependencies.
 
 ```sh
 open index.html          # macOS
-bash tests/run.sh        # 133 checks
+bash tests/run.sh        # 145 checks
 ```
 
 Three columns, left to right, following the data:
@@ -96,16 +96,24 @@ toward it. The panel shows the attempt count next to the expected count for
 exactly that reason: one number alone cannot tell you whether a run is lucky,
 unlucky, or simply unfinished.
 
-**Best single flip** tries every one-bit change of the current message in turn
-and keeps whichever lowers the digest value most. It reports how far the value
-moved and whether any flip lowered it at all — on an already-small digest,
-none may, and it says so rather than implying progress.
+**Best single flip** and **Best pair flip** try every one-bit and every
+two-bit change respectively, keeping whichever lowers the digest value most.
+Each reports how far the value moved and whether anything lowered it at all —
+on an already-small digest nothing may, and it says so rather than implying
+progress.
 
-Since the baseline is the same for every candidate, the flip with the largest
-drop is simply the one producing the smallest digest; no 256-bit differences
-are needed to find it, only to report its size. Contrast this with Sample: a
-few hundred targeted hashes buy you one greedy step, and it is nothing like
-enough. Both buttons are pointed at the same wall.
+Since the baseline is the same for every candidate, the change with the
+largest drop is simply the one producing the smallest digest; no 256-bit
+differences are needed to find it, only to report its size.
+
+The pair scan is 131,328 hashes for the default message, so it runs across
+animation frames with a progress bar rather than freezing the page. Note that
+pairs are **not** a superset of singles — the pair scan never tries a one-bit
+change — so its winner can be worse than the single-flip winner.
+
+Contrast either with Sample: a hundred thousand targeted hashes buy you one
+greedy step, and it is nowhere near enough. All three buttons are pointed at
+the same wall.
 
 ## The output panel, and one fact worth the trouble
 
@@ -165,7 +173,7 @@ UI says so too, and a test asserts that it still does.
 | `css/shatool.css` | presentation only — the palette lives at the top |
 | `js/model.js` | message state, padding, traces. No DOM access |
 | `js/pow.js` | the Bitcoin reading of a digest. No DOM access |
-| `js/search.js` | sampling and the greedy single-flip scan. No DOM access |
+| `js/search.js` | sampling and both flip scans. No DOM access |
 | `js/ui-input.js` `js/ui-canvas.js` `js/ui-output.js` | the three panels |
 | `js/app.js` | the only file that mutates state |
 | `js/vendor/shavar.js` | SHA-256, copied verbatim from `../shavar` |
@@ -179,7 +187,7 @@ names and custom properties and lets CSS decide what things look like.
 
 ## Correctness
 
-`bash tests/run.sh` — 133 checks, no dependencies.
+`bash tests/run.sh` — 145 checks, no dependencies.
 
 - The vendored SHA-256 is pinned by checksum and runs its own known-answer
   vectors, so a silent re-sync from `../shavar` fails here.
@@ -195,7 +203,8 @@ names and custom properties and lets CSS decide what things look like.
   display shows at the front.
 - The app is booted against the real `index.html` on a minimal DOM and driven
   through every control, including a sampling run pumped frame by frame.
-- The greedy flip is checked against an independent exhaustive search, and the
+- Both flip scans are checked against independent exhaustive searches, the
+  pair scan's answer is checked to be independent of its step budget, and the
   compact-`nBits` encoder against randomised values: its target must never
   fall below the value it was encoded from.
 - Consistency both ways: every id the JS looks up exists in the markup, and
