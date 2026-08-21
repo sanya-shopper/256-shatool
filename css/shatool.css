@@ -262,7 +262,11 @@ button:active { background: #1a212a; }
   padding-top: 8px;
 }
 .summary .row { display: flex; justify-content: space-between; gap: 8px; }
-.summary .row .n { color: var(--fg); }
+/* The label never wraps — "bytes 20–22" split across lines read as two
+ * entries — and a long value wraps against the right edge it grows from,
+ * so its lines stay visually attached to their own row. */
+.summary .row > span:first-child { white-space: nowrap; }
+.summary .row .n { color: var(--fg); text-align: right; }
 .summary .swatch {
   display: inline-block;
   width: 8px; height: 8px;
@@ -960,6 +964,12 @@ button:active { background: #1a212a; }
 /* ------------------------------------------------------------------ */
 
 @media (max-width: 1100px) {
+  /* The wide layout pins the page to the viewport and scrolls inside each
+   * panel. Stacked, the page itself must grow instead: with height still
+   * 100%, the flexed #layout keeps viewport height, the grid squeezes its
+   * rows below their content, and each panel's overflow paints across the
+   * panel below it. Verified by screenshot at 1024x768. */
+  html, body { height: auto; }
   body { overflow: auto; }
   #layout {
     grid-template-columns: 1fr;
