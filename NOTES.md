@@ -140,6 +140,47 @@ from a `file://` URL with no server and no build step.
   flip. The panel reports what each scan found and does not present one as an
   improvement on the other.
 
+- **2026-08-21 — Visual verification, and what it changed.** Browser
+  automation became available; no browser was installed, so
+  `chrome-headless-shell` (Chrome 152) was fetched outside the repo — the
+  no-dependencies property still holds, nothing was added here. Two defects,
+  both in CSS, both now fixed:
+
+  1. **The stacked layout overlapped itself below 1100px.** The wide layout
+     pins the page to the viewport (`html, body { height: 100% }`, panels
+     scroll internally); the narrow media query stacked the panels and set
+     panels to `overflow: visible` but left the page pinned, so the flexed
+     `#layout` kept viewport height, the grid squeezed its rows below their
+     content, and each panel's content painted straight across the panel
+     below it — the hex grid was clipped mid-row and the canvas bled over
+     the Output section. Fix: `html, body { height: auto }` inside the
+     media query, so the page grows and scrolls as a document. The bug was
+     invisible to the DOM-stub tests by construction; only a rendering
+     confirmed it.
+
+  2. **The byte-role key wrapped mid-range.** In the narrow Output panel,
+     `bytes 20–22 / compared against the nBits coefficient` flex-shrank its
+     label to "bytes 20–" with "22" orphaned on the next line, reading as
+     two entries. Fix: the label span never wraps, and wrapped values are
+     right-aligned so continuation lines stay attached to their row.
+
+  What was checked and found sound: the three-column layout at 1440×900 and
+  2200×1400 with no label overlap; the K/W/A/E hue separation and the
+  on/off/not-computed luminance steps, legible at every size tried; the
+  seed window and dashed rule; the digest byte grid and the 256-bit raster
+  with its required-zero outline; the bit toggle end to end (clicking the
+  first bit cell turned hex `21` into `a1` — the MSB, so cell order is
+  right — and the digest re-rendered); the clear-a-leading-bit explosion
+  (driven by switching between two precomputed messages with 0 and 5
+  leading zeros; five cells animated and the badge bumped to "5 leading
+  zeros"); and zero console errors across load and all of the above.
+
+  Interactions were driven without adding any tooling to the repo: Node's
+  built-in WebSocket speaking the Chrome DevTools protocol directly —
+  `Runtime.evaluate` to click and to set the hex field, then
+  `Page.captureScreenshot`. The app has no URL-state hook, and none was
+  added for this; nothing needed it.
+
 - **2026-08-09 — "Per frame" was a confusing label.** A user read it as
   something other than samples-drawn-between-redraws and concluded the
   sampling had stopped animating. Renamed to "Per redraw" with a tooltip
@@ -148,12 +189,12 @@ from a `file://` URL with no server and no build step.
 
 ## Open questions
 
-- **No visual verification yet.** The tests prove the app boots, computes
-  correctly, and responds to every control. Nothing has confirmed how it
-  *looks* — no browser automation was available in the session that built it.
-  The layout, the raster's cell proportions at real window sizes, and the
-  legibility of the colour bands are all unchecked. This is the first thing
-  to look at.
+- ~~**No visual verification yet.**~~ **Done, 2026-08-09 → 2026-08-21.**
+  Verified in headless Chrome (chrome-headless-shell 152) at 1440×900,
+  1024×768 and 2200×1400, plus a full-page capture of the stacked layout
+  and a scripted interaction pass over the DevTools protocol. Two visual
+  defects found and fixed; details in the 2026-08-21 decision and log
+  entries below.
 
 - Should the tool offer a SHA-256d (double) mode? It would make the Bitcoin
   panel a real mining view rather than an analogy, and the machinery is
@@ -205,3 +246,22 @@ Also learned, and worth knowing before writing more animation: the canvas
 afterglow's decay frames share the `requestAnimationFrame` queue with the
 sampling loop, so "pump N frames" is not "run N rounds of sampling". Two
 tests initially asserted the latter and were wrong, not the code.
+
+### 2026-08-21
+
+- First visual verification (see Decisions). Screenshots at three sizes,
+  full-page capture of the stacked layout, scripted bit-toggle and
+  explosion checks over the DevTools protocol. Two CSS fixes: the stacked
+  layout no longer overlaps itself below 1100px, and the byte-role key no
+  longer wraps mid-range. 213 checks still green.
+- Observed, deliberately left alone: when several leading bits clear at
+  once (0 → 5 in the staged test), the five simultaneous bursts overlap
+  into one bright flash that spills past the raster's top-left edge for
+  half a second. The spill is the documented design — the raster does not
+  clip so rings and sparks can overshoot — and the common case in a real
+  search is one bit at a time, which reads exactly as intended. Worth
+  revisiting only if multi-bit jumps turn out to be common.
+- Not exercised, honestly: the hover tooltip, dragging the value-circle
+  pane, and how a live sampling run *moves* — only static frames were
+  captured, so the afterglow and the button pulse are still unverified as
+  motion.
