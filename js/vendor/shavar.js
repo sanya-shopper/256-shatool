@@ -755,6 +755,104 @@
   }
 
   // -------------------------------------------------------------------
+  // 8a. Proof-of-work comparison (SPEC.md §10)
+  // -------------------------------------------------------------------
+  //
+  // The parameter named `nBits` here is Bitcoin's compact *target* encoding
+  // and has nothing to do with the message bit length called `nbits`
+  // everywhere else in this file. The collision is inherited from both
+  // conventions rather than chosen here.
+
+  /**
+   * Decode a compact `nBits` target into 32 BIG-endian bytes: index 0 is the
+   * most significant. Throws ShavarError if the encoding is negative,
+   * overflows 256 bits, or denotes zero.
+   *
+   * Built byte by byte rather than with BigInt, because the repository's rule
+   * is core language only and the six sibling implementations have no bignum
+   * either. Seven versions agreeing is worth more when they agree for the
+   * same reasons.
+   */
+  function powTarget(nBits) {
+    // `>>> 0` forces the unsigned 32-bit reading; JavaScript's bitwise
+    // operators otherwise produce a *signed* 32-bit result, so an nBits with
+    // its top bit set would come out negative.
+    nBits = nBits >>> 0;
+    const exponent = nBits >>> 24;
+    const mantissa = nBits & 0x007fffff;
+
+    // The sign bit. A target is an unsigned magnitude, so this is an error
+    // rather than something to mask off. Guarded on a nonzero mantissa to
+    // match Bitcoin's SetCompact exactly.
+    if (mantissa !== 0 && (nBits & 0x00800000) !== 0) {
+      throw new ShavarError(`nBits 0x${hex8(nBits)} is negative`);
+    }
+    if (mantissa !== 0 &&
+        (exponent > 34 ||
+         (mantissa > 0xff && exponent > 33) ||
+         (mantissa > 0xffff && exponent > 32))) {
+      throw new ShavarError(`nBits 0x${hex8(nBits)} overflows 256 bits`);
+    }
+
+    const target = new Uint8Array(32);
+    if (exponent <= 3) {
+      const v = mantissa >>> (8 * (3 - exponent));
+      target[31] = v & 0xff;
+      target[30] = (v >>> 8) & 0xff;
+      target[29] = (v >>> 16) & 0xff;
+    } else {
+      // `shift` is the byte offset of the mantissa's low byte from the least
+      // significant end, so in a big-endian array it lands at index
+      // 31 - shift. The overflow test above guarantees that no nonzero byte
+      // would land at a negative index.
+      const shift = exponent - 3;
+      if (31 - shift >= 0) target[31 - shift] = mantissa & 0xff;
+      if (30 - shift >= 0) target[30 - shift] = (mantissa >>> 8) & 0xff;
+      if (29 - shift >= 0) target[29 - shift] = (mantissa >>> 16) & 0xff;
+    }
+
+    // A zero target is unsatisfiable, so it is a malformed request rather
+    // than a verdict of "no" against every possible digest.
+    if (target.every((b) => b === 0)) {
+      throw new ShavarError(`nBits 0x${hex8(nBits)} denotes a zero target`);
+    }
+    return target;
+  }
+
+  /**
+   * Does `digest` (32 bytes, in EMISSION order — the order `hash` returns
+   * them) meet the target encoded by `nBits`? Throws if `nBits` is invalid.
+   *
+   * THE BYTE ORDER, which is the only thing here that is easy to get wrong:
+   * the digest is read LITTLE-endian. `digest[0]`, the first byte the hash
+   * function emitted, is the LEAST significant byte of the 256-bit value and
+   * `digest[31]` is the MOST significant. That is the reverse of the order
+   * the bytes are written in, and it is why a Bitcoin block hash is displayed
+   * reversed relative to the digest actually computed. See SPEC.md §10.1.
+   *
+   * The comparison is `value <= target`, not `<`.
+   */
+  function powCheck(digest, nBits) {
+    if (digest.length !== DIGEST_BYTES) {
+      throw new ShavarError(
+        `digest must be ${DIGEST_BYTES} bytes, got ${digest.length}`);
+    }
+    const target = powTarget(nBits);
+
+    // Both values walked most significant byte first. `target` is already in
+    // that order; the digest is not, so it is indexed backwards. That index
+    // expression is the whole convention — writing `digest[i]` there is the
+    // classic byte-order bug, and it is silent.
+    for (let i = 0; i < DIGEST_BYTES; i++) {
+      const a = digest[DIGEST_BYTES - 1 - i];
+      const b = target[i];
+      if (a < b) return true;
+      if (a > b) return false;
+    }
+    return true; // every byte equal: value === target, and the relation is <=
+  }
+
+  // -------------------------------------------------------------------
   // 9. Export
   // -------------------------------------------------------------------
   //
@@ -776,6 +874,8 @@
     paddedBlocks, paddedBlock, checkTrailingBits, checkBitLength,
     // hashing (SPEC.md §6)
     hash, hashEx, hashHex,
+    // proof of work (SPEC.md §10)
+    powTarget, powCheck,
     // encoding
     hex8, bytesToHex, hexToBytes, utf8Bytes, formatTrace,
     // testing

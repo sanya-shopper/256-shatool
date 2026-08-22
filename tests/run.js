@@ -30,7 +30,7 @@ const ROOT = path.join(__dirname, "..");
 /* Pinned so that a re-sync of the vendored library from ../256-shavar cannot
  * happen silently. See js/vendor/README.md. */
 const EXPECTED_SHAVAR_SHA256 =
-  "ab5b928727808d04f3224861b50516ac79290fec61ecdc1e206f4640de0a8e9c";
+  "49caaa7d332163daf5e4b78dc2b156dab4e3733b68d8746a20441b7bbe413878";
 
 // ---------------------------------------------------------------------
 // Tiny test harness
