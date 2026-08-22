@@ -5,7 +5,7 @@ no server, no build step, no dependencies.
 
 ```sh
 open index.html          # macOS
-bash tests/run.sh        # 145 checks
+bash tests/run.sh        # 213 checks
 ```
 
 Three columns, left to right, following the data:
@@ -175,6 +175,7 @@ UI says so too, and a test asserts that it still does.
 | `js/pow.js` | the Bitcoin reading of a digest. No DOM access |
 | `js/search.js` | sampling and both flip scans. No DOM access |
 | `js/ui-input.js` `js/ui-canvas.js` `js/ui-output.js` | the three panels |
+| `js/ui-circle.js` | the value circle: a floating pane, off until its checkbox is set |
 | `js/app.js` | the only file that mutates state |
 | `js/vendor/shavar.js` | SHA-256, copied verbatim from `../256-shavar` |
 | `tests/run.js` | the suite |
@@ -187,7 +188,7 @@ names and custom properties and lets CSS decide what things look like.
 
 ## Correctness
 
-`bash tests/run.sh` — 145 checks, no dependencies.
+`bash tests/run.sh` — 213 checks, no dependencies.
 
 - The vendored SHA-256 is pinned by checksum and runs its own known-answer
   vectors, so a silent re-sync from `../256-shavar` fails here.
