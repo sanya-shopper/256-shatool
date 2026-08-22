@@ -27,7 +27,7 @@ const crypto = require("crypto");
 
 const ROOT = path.join(__dirname, "..");
 
-/* Pinned so that a re-sync of the vendored library from ../shavar cannot
+/* Pinned so that a re-sync of the vendored library from ../256-shavar cannot
  * happen silently. See js/vendor/README.md. */
 const EXPECTED_SHAVAR_SHA256 =
   "ab5b928727808d04f3224861b50516ac79290fec61ecdc1e206f4640de0a8e9c";

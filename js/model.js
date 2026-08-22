@@ -57,9 +57,9 @@
   // -------------------------------------------------------------------
   //
   // A message is a byte array plus a bit count, exactly as spec/CLI.md in the
-  // shavar repo defines it: `bytes` has ceil(nbits/8) entries, and when nbits
-  // is not a multiple of 8 the final byte holds its significant bits in the
-  // HIGH-order positions with the low-order bits zero.
+  // 256-shavar repo defines it: `bytes` has ceil(nbits/8) entries, and when
+  // nbits is not a multiple of 8 the final byte holds its significant bits
+  // in the HIGH-order positions with the low-order bits zero.
   //
   // Bit numbering throughout this file is big-endian and 0-based from the
   // front of the message: bit 0 is the most significant bit of byte 0. That

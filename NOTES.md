@@ -17,12 +17,12 @@ from a `file://` URL with no server and no build step.
   scattered across commit messages, so reasoning survives independently of the
   diff that implemented it.
 
-- **2026-08-09 — SHA-256 comes from the sibling `shavar` repo, vendored.**
+- **2026-08-09 — SHA-256 comes from the sibling `256-shavar` repo, vendored.**
   Copied verbatim to `js/vendor/shavar.js`; provenance, upstream commit and
   checksum recorded in `js/vendor/README.md`, and the checksum is re-verified
   by the test suite so a silent divergence between the two repos fails the
   build here. Reimplementing would have meant re-deriving 1154 NIST CAVP
-  vectors' worth of confidence for no gain. `shavar` was also the right
+  vectors' worth of confidence for no gain. `256-shavar` was also the right
   choice specifically: `traceBlock()` exposes the full per-round interior
   (`W`, `A`, `E`, `T1`, `T2`), which is the thing being visualised, and it
   supports arbitrary **bit** lengths, without which a 513-bit default message
@@ -202,7 +202,7 @@ from a `file://` URL with no server and no build step.
   in the meantime.
 
 - Is a learning document (`.tex` → `shatool.pdf`, per CLAUDE.md rules A and B)
-  wanted for this repo, as `shavar` has? Not started.
+  wanted for this repo, as `256-shavar` has? Not started.
 
 - The example mainnet nBits (`0x17034a3f`) is a plausible fixed constant, not
   a live value, and is labelled as an example. If the tool should ever track
@@ -214,7 +214,8 @@ from a `file://` URL with no server and no build step.
 ### 2026-08-09
 
 - Empty directory. `git init`, `NOTES.md`, `.gitignore`.
-- Surveyed `../shavar`; vendored `js/shavar.js` at commit `2482824`.
+- Surveyed `../256-shavar` (then named `shavar`); vendored `js/shavar.js`.
+  The commit pin lives in `js/vendor/README.md`.
 - Built the model (`js/model.js`), the Bitcoin PoW reading (`js/pow.js`), the
   three UI modules, `index.html`, and `css/shatool.css`.
 - Test suite: 76 checks, all green. Includes the Bitcoin genesis block header
