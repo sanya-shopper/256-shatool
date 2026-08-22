@@ -27,7 +27,7 @@ standard IV. Most of the edge cases are visible on load.
 
 SHA-256's compression function is usually written as eight registers `a…h`
 shuffling each round. This tool draws the formulation used by the sibling
-[`shavar`](../shavar) project, in which six of those eight assignments are
+[`shavar`](../256-shavar) project, in which six of those eight assignments are
 recognised as pure copies and removed, leaving two coupled recurrences with a
 lookback of four:
 
@@ -176,7 +176,7 @@ UI says so too, and a test asserts that it still does.
 | `js/search.js` | sampling and both flip scans. No DOM access |
 | `js/ui-input.js` `js/ui-canvas.js` `js/ui-output.js` | the three panels |
 | `js/app.js` | the only file that mutates state |
-| `js/vendor/shavar.js` | SHA-256, copied verbatim from `../shavar` |
+| `js/vendor/shavar.js` | SHA-256, copied verbatim from `../256-shavar` |
 | `tests/run.js` | the suite |
 | `tests/domstub.js` | just enough DOM to boot the app in Node |
 | `NOTES.md` | decisions, and what is still open |
@@ -190,7 +190,7 @@ names and custom properties and lets CSS decide what things look like.
 `bash tests/run.sh` — 145 checks, no dependencies.
 
 - The vendored SHA-256 is pinned by checksum and runs its own known-answer
-  vectors, so a silent re-sync from `../shavar` fails here.
+  vectors, so a silent re-sync from `../256-shavar` fails here.
 - The digest shown is assembled from the same traces the canvas draws, and a
   test asserts it agrees with an independent hash across a range of lengths —
   including 0, 1, and both sides of every block boundary.
@@ -219,4 +219,4 @@ say nothing about layout, proportions, or legibility. See `NOTES.md`.
 ## Licence
 
 Not yet chosen. Treat as all-rights-reserved until one is added. The vendored
-`js/vendor/shavar.js` carries whatever terms `../shavar` does.
+`js/vendor/shavar.js` carries whatever terms `../256-shavar` does.
